@@ -1146,6 +1146,14 @@ return true
 end
 end
 
+	if str:find("/test") then
+		var = {}
+		var.v1 = "OnAddNotification"
+		var.v2 = base.64.lua
+		SendVariant(var)
+		return true
+	end
+
 if str:find("action|dialog_return\ndialog_name|meno\nmodfly|"..modfly.."\nmodtele|1") then
 if tele == 0 then
 tele = 1
