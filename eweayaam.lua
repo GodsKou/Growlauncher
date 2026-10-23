@@ -3,6 +3,61 @@ pref = require("preferences")
 pref:new("KouProjectConfig")
 pref:load()
 
+-- Safety checks shared by world/object/player-dependent features.
+local function checkworld()
+    local worldName = nil
+    local worldApiFound = false
+
+    if type(GetWorldName) == "function" then
+        worldApiFound = true
+        local ok, result = pcall(GetWorldName)
+        if ok then worldName = result end
+    elseif type(getWorld) == "function" then
+        worldApiFound = true
+        local ok, result = pcall(getWorld)
+        if ok and type(result) == "table" then worldName = result.name end
+    elseif type(getworld) == "function" then
+        worldApiFound = true
+        local ok, result = pcall(getworld)
+        if ok and type(result) == "table" then worldName = result.name end
+    end
+
+    -- Fail closed if world state cannot be confirmed.
+    if not worldApiFound then return false end
+    if type(worldName) ~= "string" then return false end
+    worldName = worldName:match("^%s*(.-)%s*$") or ""
+    if worldName == "" or worldName:upper() == "EXIT" then return false end
+
+    local localGetter = GetLocal or getLocal
+    if type(localGetter) == "function" then
+        local ok, player = pcall(localGetter)
+        if not ok or type(player) ~= "table" then return false end
+    end
+    return true
+end
+
+local function GetObjectListSafe()
+    if not checkworld() then return nil end
+    local getter = getObjectList or GetObjectList
+    if type(getter) ~= "function" then return nil end
+    local ok, objects = pcall(getter)
+    if not ok or type(objects) ~= "table" or next(objects) == nil then
+        return nil
+    end
+    return objects
+end
+
+local function GetPlayerListSafe()
+    if not checkworld() then return nil end
+    local getter = getPlayerList or GetPlayerList
+    if type(getter) ~= "function" then return nil end
+    local ok, players = pcall(getter)
+    if not ok or type(players) ~= "table" or next(players) == nil then
+        return nil
+    end
+    return players
+end
+
 growz_enabled = pref:get("growz_enabled", false)
 saveworldsaved = pref:get("save_world", "")
 speed_growz = pref:get("speed_growz", 3)
@@ -281,7 +336,7 @@ bjmeno = [[
             "text": "Show Collected Gems",
             "type": "toggle",
             "icon": "Bolt",
-            "alias": "show_collected_gems"
+            "alias": "show_collected_gems_toggle"
         },
         {
             "text": "Scan Gems Mode",
@@ -296,12 +351,6 @@ bjmeno = [[
             "type": "toggle",
             "default": false,
             "alias": "scan_gems_repeat"
-        },
-        {
-            "text": "Take Gems",
-            "type": "button",
-            "icon": "Bolt",
-            "alias": "takegems"
         },
         {
             "text": "Take Block",
@@ -631,11 +680,19 @@ function checkitm(id)
     return 0
 end
 
+local gemsRepeatThreadRunning = false
+
 function repeatgems()
-while gemsrepeat do
-ScanGemsParticle()
-Sleep(2000)
-end
+    if gemsRepeatThreadRunning then return end
+    gemsRepeatThreadRunning = true
+    while gemsrepeat do
+        local ok, err = pcall(ScanGemsParticle)
+        if not ok then
+            log("`4[Gems Repeat] Error: " .. tostring(err))
+        end
+        Sleep(2000)
+    end
+    gemsRepeatThreadRunning = false
 end
 
 function setblink()
@@ -659,23 +716,21 @@ function setblink()
     }
 
     while blinking do
-        local worldName = (type(GetWorldName) == "function" and GetWorldName()) or ""
-
-        -- Do not send gameplay packets while connecting, disconnected, or outside a world.
-        if worldName ~= "" and worldName ~= "EXIT" then
+        if not checkworld() then
+            Sleep(1000)
+        else
             for _, color in ipairs(colors) do
-                if not blinking then break end
+                if not blinking then
+                    break
+                end
 
-                local currentWorld = (type(GetWorldName) == "function" and GetWorldName()) or ""
-                if currentWorld == "" or currentWorld == "EXIT" then
+                if not checkworld() then
                     break
                 end
 
                 SendPacket(2, "action|setSkin\ncolor|" .. tostring(color))
-                Sleep(150)
+                Sleep(500)
             end
-        else
-            Sleep(1000)
         end
     end
 end
@@ -697,29 +752,87 @@ function toggleAutoConvert()
 end
 
 function dropItem(itemID, count)
-    SendPacket(2, "action|drop\n|itemID|" .. itemID)
-    SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|" .. itemID .. "\ncount|" .. count)
+    -- Route one-off drops through the same paced queue as bulk drops.
+    if type(autodrop) == "function" then
+        return autodrop(itemID, count)
+    end
+    return false
 end
+
 function dropgtps(id, count)
-SendPacket(2, "action|dialog_return\ndialog_name|drop\nitem_drop|"..id.."|\nitem_count|"..count)
+    SendPacket(2, "action|dialog_return\ndialog_name|drop\nitem_drop|" .. tostring(id) .. "|\nitem_count|" .. tostring(count))
+end
+
+-- Bulk drops are serialized and paced to avoid sending dozens of packets at once.
+local dropQueue = {}
+local dropWorkerRunning = false
+
+-- AutoDrop: jeda minimal untuk memberi waktu dialog drop diproses.
+-- Jika konfirmasi gagal di server, naikkan menjadi 60-100 ms.
+local AUTO_DROP_HANDSHAKE_MS = 40
+
+local function isWorldReadyForActions()
+    return checkworld()
 end
 
 function rdrop(id, amount)
-    SendPacket(2, "action|drop\n|itemID|"..id)
-    SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|"..id.."|\ncount|"..amount)
+    if not isWorldReadyForActions() then return false end
+
+    SendPacket(2, "action|drop\n|itemID|" .. tostring(id))
+    if AUTO_DROP_HANDSHAKE_MS > 0 then
+        Sleep(AUTO_DROP_HANDSHAKE_MS)
+    end
+
+    -- Cek ulang karena world bisa berubah selama jeda dialog.
+    if not isWorldReadyForActions() then return false end
+    SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|" .. tostring(id) .. "|\ncount|" .. tostring(amount))
+    return true
+end
+
+local function startDropQueueWorker()
+    if dropWorkerRunning then return end
+    dropWorkerRunning = true
+
+    runThread(function()
+        while #dropQueue > 0 do
+            local job = table.remove(dropQueue, 1)
+            local left = job.amount
+
+            while left > 0 do
+                -- Tunggu world valid tanpa mengirim paket saat transisi.
+                if not isWorldReadyForActions() then
+                    Sleep(300)
+                else
+                    local chunk = math.min(left, 200)
+                    local ok, sent = pcall(rdrop, job.id, chunk)
+                    if not ok then
+                        log("`4[AutoDrop] Error mengirim paket drop: " .. tostring(sent))
+                        break
+                    end
+                    if sent then
+                        auto_drop_count = (tonumber(auto_drop_count) or 0) + 1
+                        left = left - chunk
+                    else
+                        Sleep(300)
+                    end
+                end
+            end
+            -- Tidak ada Sleep tambahan antar-chunk atau antar-job.
+        end
+
+        dropWorkerRunning = false
+        if #dropQueue > 0 then startDropQueueWorker() end
+    end)
 end
 
 function autodrop(id, amount)
-    local left = amount
-    while left > 200 do
-        auto_drop_count = auto_drop_count + 1
-        rdrop(id, 200)
-        left = left - 200
-    end
-    if left > 0 then
-        auto_drop_count = auto_drop_count + 1
-        rdrop(id, left)
-    end
+    id = tonumber(id)
+    amount = math.floor(tonumber(amount) or 0)
+    if not id or amount <= 0 then return false end
+
+    dropQueue[#dropQueue + 1] = { id = id, amount = amount }
+    startDropQueueWorker()
+    return true
 end
 
 function pos(px,py)
@@ -741,59 +854,8 @@ pos2 = {
 }
 }
 
-function takegems()
-tile = (tile);
-Count = 0;
-data = {};
-do
-local objects = (type(GetObjectList) == "function" and GetObjectList()) or (type(getObjectList) == "function" and getObjectList()) or {}
-for _, obj in pairs(objects) do
-for _, tiles in pairs(tile.pos1) do
-if obj.itemid == 112 and (obj.posX)//32 == tiles.x and (obj.posY)//32 == tiles.y then
-Count = Count + obj.amount;
-pkt = {}
-pkt.type = 11
-pkt.value = obj.id
-pkt.x = obj.posX
-pkt.y = obj.posY
-SendPacketRaw(false, pkt)
-end end end
-table.insert(data, Count)
-Count = 0;
-local objects = (type(GetObjectList) == "function" and GetObjectList()) or (type(getObjectList) == "function" and getObjectList()) or {}
-for _, obj in pairs(objects) do
-for _, tiles in pairs(tile.pos2) do
-if obj.itemid == 112 and (obj.posX)//32 == tiles.x and (obj.posY)//32 == tiles.y then
-Count = Count + obj.amount;
-pkt = {}
-pkt.type = 11
-pkt.value = obj.id
-pkt.x = obj.posX
-pkt.y = obj.posY
-SendPacketRaw(false, pkt)
-end end end
-table.insert(data, Count)
-Count = 0;
-if data[2] > data[1] then
-SendPacket(2, "action|input\n|text|`0[ Player1 ] :`2 "..data[2].." `bVs `0[ Player2 ] :`2 "..data[1].."");
-ontalk("`9Pos Left `2WIN!")
-log("`9Pos Left `2WIN!")
-cg2 = data[2]
-elseif data[1] == data[2] then
-SendPacket(2, "action|input\n|text|`0[ Player1 ] `w: "..data[2].." `0[ `bTie `0] `0[ Player2 ] `w: "..data[1].. "");
-log("`9Nothing Winner `4TIE!")
-ontalk("`9Nothing Winner `4TIE!")
-elseif data[2] < data[1] then
-SendPacket(2, "action|input\n|text|`0[ Player1 ] :`2 "..data[2].." `bVs `0[ Player2 ] :`2 "..data[1].. "");
-ontalk("`9Pos Right `2WIN!")
-log("`9Pos Right `2WIN!")
-cg1 = data[1]
-end
-data = {};
-end;
-end
-
 function takeblock()
+    if not checkworld() then return end
     tile = tile
 
     local TAKE_TOLERANCE = 10
@@ -833,7 +895,12 @@ function takeblock()
            and objY <= maxY
     end
 
-    local objects = GetObjectList() or {}
+    local objectGetter = GetObjectList or getObjectList
+    local objects = {}
+    if type(objectGetter) == "function" then
+        local ok, result = pcall(objectGetter)
+        if ok and type(result) == "table" then objects = result end
+    end
 
     for _, obj in pairs(objects) do
         for _, tiles in pairs(tile.pos1 or {}) do
@@ -891,10 +958,16 @@ function takeblock()
 end
 
 function checkgems()
+    if not checkworld() then return end 
     tile = tile
 
     local data = {0, 0}
-    local objects = GetObjectList() or {}
+    local objectGetter = GetObjectList or getObjectList
+    local objects = {}
+    if type(objectGetter) == "function" then
+        local ok, result = pcall(objectGetter)
+        if ok and type(result) == "table" then objects = result end
+    end
 
     local GEM_TOLERANCE = 10
 
@@ -1588,15 +1661,21 @@ end
 
 local function getTotalGemsAtTile(x_tile, y_tile)
     local total_amount = 0
+    if not checkworld() then return 0 end
+    local objects = GetObjectListSafe()
+    if type(objects) ~= "table" then return 0 end
 
-    if type(getObjectList()) == "table" then
-        for _, obj in pairs(getObjectList()) do
-            if obj.itemid == 112 then
-                local tx = math.floor((obj.posX + 8) / 32)
-                local ty = math.floor((obj.posY + 8) / 32)
+    for _, obj in pairs(objects) do
+        if type(obj) == "table" and tonumber(obj.itemid) == 112 then
+            local pos = obj.pos
+            local px = tonumber(obj.posX) or (type(pos) == "table" and tonumber(pos.x))
+            local py = tonumber(obj.posY) or (type(pos) == "table" and tonumber(pos.y))
 
-                if tx == x_tile and ty == y_tile then
-                    total_amount = total_amount + (obj.amount or 1)
+            if px and py then
+                local tx = math.floor((px + 8) / 32)
+                local ty = math.floor((py + 8) / 32)
+                if tx == tonumber(x_tile) and ty == tonumber(y_tile) then
+                    total_amount = total_amount + (tonumber(obj.amount) or 1)
                 end
             end
         end
@@ -1606,6 +1685,8 @@ local function getTotalGemsAtTile(x_tile, y_tile)
 end
 
 local function spawnGemsParticle(x_tile, y_tile, amount)
+    if not checkworld() then return end
+    if type(x_tile) ~= "number" or type(y_tile) ~= "number" then return end
     local px = (x_tile * 32) + 16
     local py = (y_tile * 32) + 16
 
@@ -1623,16 +1704,35 @@ local function spawnGemsParticle(x_tile, y_tile, amount)
     end
 end
 
+local pendingParticleTiles = {}
+
 local function triggerParticleAt(tx, ty, delay)
+    if not checkworld() then return end
+    tx, ty = tonumber(tx), tonumber(ty)
+    if not tx or not ty then return end
+
+    local key = tostring(tx) .. ":" .. tostring(ty)
+    if pendingParticleTiles[key] then return end
+    pendingParticleTiles[key] = true
+
     runThread(function()
-        sleep(delay or 100)
-        local total = getTotalGemsAtTile(tx, ty)
-        if total > 0 then
-            spawnGemsParticle(tx, ty, total)
-            Sleep(800)
-            spawnGemsParticle(tx, ty, total)
-            Sleep(800)
-            spawnGemsParticle(tx, ty, total)
+        local ok, err = pcall(function()
+            Sleep(delay or 100)
+            if not checkworld() then return end
+            local total = getTotalGemsAtTile(tx, ty)
+            if total > 0 and checkworld() then
+                spawnGemsParticle(tx, ty, total)
+                Sleep(800)
+                if not checkworld() then return end
+                spawnGemsParticle(tx, ty, total)
+                Sleep(800)
+                if not checkworld() then return end
+                spawnGemsParticle(tx, ty, total)
+            end
+        end)
+        pendingParticleTiles[key] = nil
+        if not ok then
+            log("`4[Visual Gems] Particle error: " .. tostring(err))
         end
     end)
 end
@@ -1648,22 +1748,45 @@ return false
 end
 
 local function triggerParticleAt1(tx, ty, delay)
+    if not checkworld() then return end
+    tx, ty = tonumber(tx), tonumber(ty)
+    if not tx or not ty then return end
+
+    local key = tostring(tx) .. ":" .. tostring(ty)
+    if pendingParticleTiles[key] then return end
+    pendingParticleTiles[key] = true
+
     runThread(function()
-        sleep(delay or 100)
-        local total = getTotalGemsAtTile(tx, ty)
-        if total > 0 then
-            spawnGemsParticle(tx, ty, total)
+        local ok, err = pcall(function()
+            Sleep(delay or 100)
+            if not checkworld() then return end
+            local total = getTotalGemsAtTile(tx, ty)
+            if total > 0 and checkworld() then spawnGemsParticle(tx, ty, total) end
+        end)
+        pendingParticleTiles[key] = nil
+        if not ok then
+            log("`4[Visual Gems] Particle error: " .. tostring(err))
         end
     end)
 end
 
 function ScanGemsParticle()
-    for _, obj in pairs(getObjectList() or {}) do
-        if obj.itemid == 112 then
-            local x = math.floor((obj.pos.x + 8 or 0) / 32)
-            local y = math.floor((obj.pos.y + 8 or 0) / 32)
+    -- No-op outside a loaded world or when the object list is unavailable/empty.
+    if not checkworld() then return end
+    local objects = GetObjectListSafe()
+    if type(objects) ~= "table" then return end
 
-            triggerParticleAt(x, y, 100)
+    for _, obj in pairs(objects) do
+        if type(obj) == "table" and tonumber(obj.itemid) == 112 then
+            local pos = obj.pos
+            local px = tonumber(obj.posX) or (type(pos) == "table" and tonumber(pos.x))
+            local py = tonumber(obj.posY) or (type(pos) == "table" and tonumber(pos.y))
+
+            if px and py then
+                local x = math.floor((px + 8) / 32)
+                local y = math.floor((py + 8) / 32)
+                triggerParticleAt(x, y, 100)
+            end
         end
     end
 end
@@ -1682,56 +1805,137 @@ end
     end
 
     local function sendGemCounterChat(message)
-        SendPacket(2, "action|input\n|text|" .. message)
+        if not checkworld() then return end
+        local meGetter = GetLocal or getLocal
+        if type(meGetter) ~= "function" then return end
+        local ok, me = pcall(meGetter)
+        if not ok or type(me) ~= "table" then return end
+        if type(SendPacket) == "function" then
+            pcall(SendPacket, 2, "action|input\n|text|" .. tostring(message or ""))
+        end
     end
 
 runThread(function()
+    local idleMilliseconds = 0
+    local pollMilliseconds = 100
+    local lastObservedAmount = 0
+
     while true do
-        if show_gems_collected then
-            local currentCounterGems = getGems() or 0
-            local currentGemTime = os.clock() * 1000
+        if show_gems_collected and checkworld() then
+            local currentAmount = tonumber(collectedCounterGems) or 0
 
-            if currentCounterGems > previousCounterGems then
-                collectedCounterGems = collectedCounterGems
-                    + currentCounterGems - previousCounterGems
+            if currentAmount > 0 then
+                if currentAmount ~= lastObservedAmount then
+                    idleMilliseconds = 0
+                    lastObservedAmount = currentAmount
+                else
+                    idleMilliseconds = idleMilliseconds + pollMilliseconds
+                end
 
-                lastGemGainTime = currentGemTime
-            end
-
-            previousCounterGems = currentCounterGems
-
-            if collectedCounterGems > 0
-                and currentGemTime - lastGemGainTime >= 500 then
-
-                sendGemCounterChat(
-                    "`wCollected `#+" ..
-                    formatGemNumber(collectedCounterGems) ..
-                    " `wGems."
-                )
-
-                collectedCounterGems = 0
-                lastGemGainTime = 0
-
-                Sleep(1000)
+                if idleMilliseconds >= 500 then
+                    sendGemCounterChat(
+                        "`wCollected `#+" ..
+                        formatGemNumber(currentAmount) ..
+                        " `wGems."
+                    )
+                    collectedCounterGems = 0
+                    lastObservedAmount = 0
+                    idleMilliseconds = 0
+                end
+            else
+                idleMilliseconds = 0
+                lastObservedAmount = 0
             end
         else
-            previousCounterGems = getGems() or 0
             collectedCounterGems = 0
-            lastGemGainTime = 0
+            idleMilliseconds = 0
+            lastObservedAmount = 0
         end
 
-        Sleep(100)
+        Sleep(pollMilliseconds)
     end
 end)
 
+local function stripOwnPingPrefix(rawName)
+    local name = tostring(rawName or "")
+
+    -- Buang prefix ping berulang, termasuk kode warna yang berada
+    -- sebelum tanda tutup kurung, misalnya `2[343`w].
+    for _ = 1, 20 do
+        local before = name
+        -- Format ping aktual: `w[`2/`6/`4angka`w] Nama.
+        -- Buang prefix ping dengan kode warna yang berbeda agar refresh mengganti,
+        -- bukan menambahkan prefix baru di depan nama.
+        name = name:gsub("^%s*`w%[%s*`[%w]%s*%d+`w%]%s*", "")
+        name = name:gsub("^%s*`w%[%s*%d+`w%]%s*", "")
+        name = name:gsub("^%s*`[%w]%[%s*`[%w]%s*%d+`w%]%s*", "")
+        name = name:gsub("^%s*`[%w]%[%s*%d+`w%]%s*", "")
+        -- Format lama yang mungkin sudah tersimpan.
+        name = name:gsub("^%s*`#%[%s*`[%w]%s*%d+`#%]%s*", "")
+        name = name:gsub("^%s*`#%[%s*%d+`#%]%s*", "")
+        name = name:gsub("^%s*`[%w]%s*%[%s*%d+%s*ms%s*%]%s*", "")
+        name = name:gsub("^%s*%[%s*%d+%s*ms%s*%]%s*", "")
+        name = name:gsub("^%s*`[%w]%s*%[%s*%d+`[%w]%s*%]%s*", "")
+        name = name:gsub("^%s*`[%w]%s*%[%s*%d+%s*%]%s*", "")
+        name = name:gsub("^%s*%[%s*%d+`[%w]%s*%]%s*", "")
+        name = name:gsub("^%s*%[%s*%d+%s*%]%s*", "")
+        if name == before then break end
+    end
+
+    return name
+end
+
 local function getCleanName(rawName)
     if rawName == nil then return "Player" end
-    local clean = tostring(rawName)
+    local clean = stripOwnPingPrefix(tostring(rawName))
     -- Hilangkan akhiran angka spin, baik memakai kode warna maupun tidak.
+    clean = clean:gsub("%s*`#%[%s*`?.?%d+`#%s*%]$", "")
     clean = clean:gsub("%s*`7%[%s*`?.?%d+`?%s*%]$", "")
     clean = clean:gsub("%s*%[%s*`?.?%d+`?%s*%]$", "")
     clean = clean:gsub("%s*%[%d+%]%s*$", "")
     return clean:match("^%s*(.-)%s*$") or tostring(rawName)
+end
+
+-- Ping hanya ditampilkan pada nama player lokal; angka spin tetap untuk semua player.
+local function getLocalNetIdSafe()
+    local getter = GetLocal or getLocal
+    if type(getter) ~= "function" then return nil end
+    local ok, me = pcall(getter)
+    if not ok or type(me) ~= "table" then return nil end
+    return tonumber(me.netid or me.netID or me.netId)
+end
+
+local function getLocalPingSafe()
+    local pingGetter = getPing or GetPing
+    if type(pingGetter) == "function" then
+        local ok, value = pcall(pingGetter)
+        value = ok and tonumber(value) or nil
+        if value and value >= 0 then return math.floor(value) end
+    end
+    local getter = GetLocal or getLocal
+    if type(getter) == "function" then
+        local ok, me = pcall(getter)
+        if ok and type(me) == "table" then
+            local value = tonumber(me.ping or me.Ping or me.latency)
+            if value and value >= 0 then return math.floor(value) end
+        end
+    end
+    return nil
+end
+
+local function buildPlayerDisplayName(baseName, number, color, netid)
+    -- Gunakan nama dari world SAAT INI beserta kode warna yang sedang berlaku.
+    -- Jangan menghapus semua kode warna: itu membuat nama pemilik world jadi putih.
+    -- applyCachedSpinNames memasok baseName dari player list saat ini, bukan cache world lama.
+    local name = getCleanName(baseName)
+    name = name:match("^%s*(.-)%s*$") or name
+
+    -- OnNameChanged hanya menambahkan angka spin, tanpa prefix ping.
+    if number ~= nil then
+        name = name .. " `#[ " .. tostring(color or "`b") .. tostring(number) .. "`# ]"
+    end
+
+    return name
 end
 
 -- Nama dinormalisasi agar cache tetap cocok meskipun kode warna/nama tampilan berubah.
@@ -1745,38 +1949,150 @@ end
 local spinNameOriginals = {}
 local spinNumbersByName = {}
 
+-- Cegah OnNameChanged mengirim nama target yang sama berulang kali.
+-- Cache ini berlaku selama sesi script berjalan.
+local lastSpinDisplayByNetId = {}
+local spinRestoreThreadRunning = false
+
+local function sendSpinNameOnce(displayName, netid)
+    netid = tonumber(netid)
+    if not checkworld() or not netid or type(displayName) ~= "string" then
+        return false
+    end
+
+    if lastSpinDisplayByNetId[netid] == displayName then
+        return false
+    end
+
+    local ok = pcall(function()
+        SendVariant({
+            v1 = "OnNameChanged",
+            v2 = displayName,
+            netID = netid
+        }, netid)
+    end)
+
+    if ok then
+        lastSpinDisplayByNetId[netid] = displayName
+        return true
+    end
+
+    return false
+end
+
 local function getPlayerName(netid)
-    if getPlayerList then
-        local ok, list = pcall(getPlayerList)
-        if ok and type(list) == "table" then
-            for _, p in pairs(list) do
-                if tonumber(p.netid or p.netID) == tonumber(netid) then
-                    return getCleanName(p.name)
-                end
+    if not checkworld() then return nil end
+
+    local list = GetPlayerListSafe()
+    if type(list) == "table" then
+        for _, player in pairs(list) do
+            if type(player) == "table"
+                and tonumber(player.netid or player.netID) == tonumber(netid) then
+                return getCleanName(player.name)
             end
         end
     end
-    if getLocal then
-        local ok, me = pcall(getLocal)
-        if ok and type(me) == "table" and tonumber(me.netid or me.netID) == tonumber(netid) then
+
+    local localGetter = GetLocal or getLocal
+    if type(localGetter) == "function" then
+        local ok, me = pcall(localGetter)
+        if ok and type(me) == "table"
+            and tonumber(me.netid or me.netID) == tonumber(netid) then
             return getCleanName(me.name)
         end
     end
     return nil
 end
 
+local function isOnValidWorldForNameChange()
+    return checkworld()
+end
+
+-- Reapply cached spin labels after entering/re-entering a world.
+-- Cache tables stay in memory across world changes; current NetIDs are refreshed.
+local function applyCachedSpinNames()
+    if not isOnValidWorldForNameChange() then
+        return
+    end
+
+    local players = GetPlayerListSafe()
+    if type(players) ~= "table" or next(players) == nil then return end
+
+    for _, player in pairs(players) do
+        if type(player) == "table" then
+            local netid = tonumber(player.netid or player.netID)
+            local rawName = player.name
+
+            if netid and type(rawName) == "string" and rawName ~= "" then
+                local baseName = getCleanName(rawName)
+                local cached = spinNumbersByName[normalizeSpinName(baseName)]
+
+                if cached and cached.number and isOnValidWorldForNameChange() then
+                    -- Penting: pakai baseName yang baru dibaca dari player list world ini.
+                    -- Jangan gunakan cached.baseName karena warnanya mungkin dari world sebelumnya.
+                    local color = tostring(cached.color or "`b")
+                    local displayName = buildPlayerDisplayName(
+                        baseName, cached.number, color, netid
+                    )
+
+                    -- Kirim hanya jika nama saat ini memang berbeda dari nama target.
+                    -- Ini menghindari pengiriman OnNameChanged berulang yang bisa membebani game.
+                    local currentClean = tostring(rawName):gsub("`.", "")
+                    local targetClean = tostring(displayName):gsub("`.", "")
+                    currentClean = currentClean:gsub("%s+", " "):match("^%s*(.-)%s*$") or currentClean
+                    targetClean = targetClean:gsub("%s+", " "):match("^%s*(.-)%s*$") or targetClean
+
+                    if currentClean ~= targetClean then
+                        sendSpinNameOnce(displayName, netid)
+                    end
+                end
+            end
+        end
+    end
+
+
+end
+
+-- Pulihkan label spin saat spawn maupun ketika console menandakan world baru dimasuki.
+-- Satu thread saja yang aktif; percobaan dihentikan jika pemain keluar dari world.
+local function startSpinRestore()
+    if spinRestoreThreadRunning then return end
+
+    for netid in pairs(lastSpinDisplayByNetId) do
+        lastSpinDisplayByNetId[netid] = nil
+    end
+
+    spinRestoreThreadRunning = true
+    runThread(function()
+        for attempt = 1, 12 do
+            Sleep(500)
+            if not checkworld() then
+                -- Jangan hentikan permanen jika event dipicu sebelum world siap.
+                -- Cukup lanjutkan percobaan terbatas.
+            else
+                local players = GetPlayerListSafe()
+                if type(players) == "table" and next(players) ~= nil then
+                    pcall(applyCachedSpinNames)
+                end
+            end
+        end
+        spinRestoreThreadRunning = false
+    end)
+end
 
 local function calculate(expression)
-    if not expression or expression == "" then
+    if type(expression) ~= "string" or expression == "" then
         return nil
     end
 
     expression = expression:gsub("%s+", "")
 
+    -- Hanya izinkan angka dan operator matematika.
     if expression:find("[^%d%.%+%-%*/%(%)%%%^]") then
         return nil
     end
 
+    -- Validasi format angka.
     for number in expression:gmatch("[%d%.]+") do
         local _, count = number:gsub("%.", "")
         if count > 1 then
@@ -1784,14 +2100,28 @@ local function calculate(expression)
         end
     end
 
-    local fn, err = load("return " .. expression)
+    -- Pastikan ekspresi tidak kosong.
+    if expression == "" then
+        return nil
+    end
+
+    -- Batasi ekspresi agar tidak terlalu panjang.
+    if #expression > 200 then
+        return nil
+    end
+
+    -- Kompilasi ekspresi matematika.
+    local fn = load("return " .. expression)
+
     if not fn then
         return nil
     end
 
+    -- Jalankan dengan perlindungan error.
     local success, result = pcall(fn)
 
-    if success and type(result) == "number"
+    if success
+        and type(result) == "number"
         and result == result
         and result ~= math.huge
         and result ~= -math.huge then
@@ -1801,6 +2131,61 @@ local function calculate(expression)
     return nil
 end
 
+function wrenchAll(mode)
+    if type(GetPlayerList) ~= "function" then
+        log("`4GetPlayerList unavailable")
+        ontext("`4GetPlayerList unavailable")
+        return false
+    end
+
+    local list = GetPlayerList()
+
+    if type(list) ~= "table" then
+        ontext("`4Player list tidak tersedia.")
+        return false
+    end
+
+    local me = GetLocal()
+    local myNetID = me and (me.netID or me.netid) or 0
+
+    local modeValue = {
+        pull = 1,
+        kick = 2,
+        ban = 3
+    }
+
+    local value = modeValue[mode]
+
+    if not value then
+        ontext("`4Mode tidak valid!")
+        return false
+    end
+
+    -- Aktifkan Fast Wrench dan pilih mode
+    editToggle("Fast Wrench", true)
+    editToggle("Value", value)
+
+    local count = 0
+
+    for _, plr in pairs(list) do
+        local netID = plr and (plr.netID or plr.netid)
+
+        if netID and tonumber(netID) ~= tonumber(myNetID) then
+            SendPacket(2, "action|wrench\n|netid|" .. netID)
+            count = count + 1
+            Sleep(40)
+        end
+    end
+
+    local result = "`2" .. mode .. " all: `9" .. count
+
+    log(result)
+    ontext(result)
+    ontalk(result)
+
+    return true
+end
+
 local startupPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
 local startupName = (type(startupPlayer) == "table" and startupPlayer.name) or "Player"
 log("`9Hello, " .. tostring(startupName) .. " Welcome Back")
@@ -1808,7 +2193,7 @@ Sleep(500)
 log("`bKamu Bermain Di `0Hari`9 "..hari.." `0Tanggal`c "..tanggal.." `0Bulan`c "..bulan.." `0 Tahun`9 "..tahun.."")
 log("`#Ketik /proxy untuk melihat command.")
 
-function hook(type, str, packet)
+function hook(packetType, str, packet)
 
 str = tostring(str or "")
 
@@ -2086,6 +2471,12 @@ if relogPending and str:find("action|quit_to_exit", 1, true) then
         return false
     end
 
+if cmd("/rejoin") then
+SendPacket(3,"action|join_request\nname|"..GetWorldName())
+log("`2Rejoin world successfully.")
+return true
+end
+
 if str:find("buttonClicked|btkbutton") then
 btk()
 return true
@@ -2297,13 +2688,12 @@ takegems()
 return true
 end
 
-if str:find("buttonClicked|fcbgl") then
+if str:find("buttonClicked|fcbgl") or cmd("/cv") then
 toggleAutoConvert()
 return true
 end
 
-
-if str:find("buttonClicked|auto_crime") then
+if str:find("buttonClicked|auto_crime") or cmd("/crime") then
 autocrime = not autocrime
 ontext("`2Auto Crime: " .. (autocrime and "`2ON" or "`4OFF"))
 return true
@@ -2331,27 +2721,43 @@ if amount then
     return true
 end
 
-     if string.match(input, "/dd (%d+)") then
-local amount = string.match(input, "/dd (%d+)")
-local cur_dl, cur_bgl = inv(1796), inv(7188)
-local b_drop = math.floor(amount / 100)
-local d_drop = amount % 100
-if cur_bgl < b_drop then
-local diff = b_drop - cur_bgl
-b_drop = cur_bgl
-d_drop = d_drop + (diff * 100)
-end
-local max_dl_100s = math.floor(cur_dl / 100)
-local replace_bgl = math.min(max_dl_100s, b_drop)
-b_drop = b_drop - replace_bgl
-d_drop = d_drop + (replace_bgl * 100)
-if cur_dl < d_drop then wear(7188) end
-if b_drop > 0 then autodrop(7188, b_drop) end
-if d_drop > 0 then autodrop(1796, d_drop) end
-ontext("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
-ontalk("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
-log("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
-return true
+if string.match(input, "^/dd (%d+)$") then
+    local amount = tonumber(string.match(input, "^/dd (%d+)$"))
+    local cur_dl, cur_bgl = inv(1796), inv(7188)
+    local need_bgl = math.floor(amount / 100)
+    local need_dl = amount % 100
+    -- Hitung total nilai DL yang tersedia
+    local total_dl = (cur_bgl * 100) + cur_dl
+    -- Batalkan jika total DL/BGL tidak mencukupi
+    if total_dl < amount then
+ontext("`4Gagal Drop! `wJumlah tidak mencukupi. `wDiminta: `9" .. amount .. " DL `w| Tersedia: `9" .. total_dl .. " DL")
+        return true
+    end
+    local b_drop = need_bgl
+    local d_drop = need_dl
+    -- Jika DL kurang, konversi BGL menjadi DL
+    if cur_dl < d_drop then
+        local diff = d_drop - cur_dl
+        local convert_bgl = math.ceil(diff / 100)
+        if cur_bgl < b_drop + convert_bgl then
+            ontext("`4Gagal Drop! `wBGL tidak mencukupi.")
+            return true
+        end
+        b_drop = b_drop + convert_bgl
+        d_drop = d_drop - (convert_bgl * 100)
+        d_drop = d_drop + cur_dl
+    end
+    if b_drop > 0 then
+        autodrop(7188, b_drop)
+    end
+    if d_drop > 0 then
+        autodrop(1796, d_drop)
+    end
+local result = "`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL"
+    log(result)
+    ontext(result)
+    ontalk(result)
+    return true
 end
 
 if string.match(input, "^/db (%d+)$") then
@@ -2364,33 +2770,54 @@ if string.match(input, "^/db (%d+)$") then
     return true
 end
 
-if string.match(input, "/cd (%d+)") then
-local target = string.match(input, "/cd (%d+)")
-local b_drop = math.floor(target / 10000)
-local rem = target % 10000
-if inv(7188) < b_drop then
-rem = rem + ((b_drop - inv(7188)) * 10000)
-b_drop = inv(7188)
-end
-local d_drop = math.floor(rem / 100)
-local w_drop = rem % 100
-if inv(242) < w_drop then
-if inv(1796) > d_drop then wear(1796)
-elseif inv(7188) > b_drop then wear(7188); wear(1796) end
-end
-if inv(1796) < d_drop and inv(7188) > b_drop then wear(7188) end
-if b_drop > 0 then autodrop(7188, b_drop) end
-if d_drop > 0 then autodrop(1796, d_drop) end
-if w_drop > 0 then autodrop(242, w_drop) end
-    local result =
-        "`2Dropped: `9" .. b_drop ..
-        " BGL  `9" .. d_drop ..
-        " DL  `9"..w_drop..
-        " WL"
+if string.match(input, "^/cd (%d+)$") then
+    local target = tonumber(string.match(input, "^/cd (%d+)$"))
+    local cur_bgl = inv(7188)
+    local cur_dl = inv(1796)
+    local cur_wl = inv(242)
+    -- Hitung total nilai dalam WL
+    local total_wl = (cur_bgl * 10000) + (cur_dl * 100) + cur_wl
+    -- Batalkan jika total tidak mencukupi
+    if total_wl < target then
+        ontext("`4Gagal Drop! `wJumlah tidak mencukupi. `wDiminta: `9" .. target .. " WL `w| Tersedia: `9" .. total_wl .. " WL")
+        return true
+    end
+    local b_drop = math.floor(target / 10000)
+    local rem = target % 10000
+    if cur_bgl < b_drop then
+        rem = rem + ((b_drop - cur_bgl) * 10000)
+        b_drop = cur_bgl
+    end
+    local d_drop = math.floor(rem / 100)
+    local w_drop = rem % 100
+    -- Pastikan jumlah item yang akan di-drop tersedia
+    if cur_wl < w_drop then
+        local missing_wl = w_drop - cur_wl
+        local convert_dl = math.ceil(missing_wl / 100)
+        if cur_dl >= d_drop + convert_dl then
+            wear(1796)
+        elseif cur_bgl > b_drop then
+            wear(7188)
+            wear(1796)
+        end
+    end
+    if cur_dl < d_drop and cur_bgl > b_drop then
+        wear(7188)
+    end
+    if b_drop > 0 then
+        autodrop(7188, b_drop)
+    end
+    if d_drop > 0 then
+        autodrop(1796, d_drop)
+    end
+    if w_drop > 0 then
+        autodrop(242, w_drop)
+    end
+local result = "`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `9" .. w_drop .. " WL"
     ontext(result)
     log(result)
     ontalk(result)
-return true
+    return true
 end
 
 if cmd("/bal") then
@@ -2407,10 +2834,6 @@ if cmd("/daw") then
 return true
 end
 
-    if cmd("/cv") then
-        toggleAutoConvert()
-        return true
-    end
         if cmd("/gemsrepeat") or str:find("buttonClicked|gems_repeat") then
         gemsrepeat = not gemsrepeat
         ontext("`2Gems Repeat : " .. (gemsrepeat and "`2ON" or "`4OFF"))
@@ -2434,19 +2857,19 @@ end
     if cmd("/reme") then
         Config.gameMode = "reme"
         log("Mode: REME")
-        notify("Mode: REME")
+        ontext("Mode: REME")
         return true
     end
     if cmd("/leme") then
         Config.gameMode = "leme"
         log("Mode: LEME")
-        notify("Mode: LEME")
+        ontext("Mode: LEME")
         return true
     end
     if cmd("/lewa") then
         Config.gameMode = "lewa"
         log("Mode: lewa")
-        notify("Mode: LEWA")
+        ontext("Mode: LEWA")
         return true
     end
 
@@ -2491,13 +2914,11 @@ return true
 
 if str:find("/settax (%d+%.?%d*)") then
     taxset = tonumber(str:match("/settax (%d+%.?%d*)"))
-
     if taxset and taxset >= 0 and taxset <= 100 then
         ontext("`2Tax set to: `w" .. taxset .. "%")
     else
         ontext("`4Tax must be between 0 and 100.")
     end
-
     return true
 end
 
@@ -2506,6 +2927,21 @@ end
         ontalk("`2Auto Accept Access Mode: " .. (auto_accept_mode and "`2ON" or "`4OFF"))
         return true
     end
+    
+    if cmd("/pullall") then
+    wrenchAll("pull")
+    return true
+end
+
+if cmd("/kickall") then
+    wrenchAll("kick")
+    return true
+end
+
+if cmd("/banall") then
+    wrenchAll("ban")
+    return true
+end
 
   if cmd("/gems") then
   punchgems = not punchgems
@@ -2602,7 +3038,7 @@ end
         return true
     end
 
-    if str:find("/calc ", 1, true) then
+if str:find("/calc ", 1, true) then
     local expression = str:match("/calc%s+(.+)")
 
     if expression then
@@ -2610,28 +3046,24 @@ end
 
         if result ~= nil then
             ontext(
-                "`w" ..
-                expression ..
-                " `2= `w" ..
-                tostring(result)
+                "`w" .. expression ..
+                " `2= `w" .. tostring(result)
             )
+
             ontalk(
-                "`w" ..
-                expression ..
-                " `2= `w" ..
-                tostring(result)
+                "`w" .. expression ..
+                " `2= `w" .. tostring(result)
             )
+
             log(
-                "`2Calculator: `w" ..
-                expression ..
-                " `2= `w" ..
-                tostring(result)
+                "`2Calculator: `w" .. expression ..
+                " `2= `w" .. tostring(result)
             )
         else
             ontext("`4Invalid calculation!")
         end
     else
-        ontext("`4Usage: /calc 4*5")
+        ontext("`4Usage: /calc 10+20+30")
     end
 
     return true
@@ -2748,10 +3180,49 @@ return false
 end
 
 function var(var)
+
+
     if type(var) ~= "table" then
         return false
     end
+    
     var.v1 = tostring(var.v1 or "")
+        if auto_accept_hide_ticks > 0 and var.v1:find("OnDialogRequest") then
+        if var.v2:find("acceptlock") or var.v2:find("acceptaccess") then
+            return true 
+        end
+    end
+
+    -- Trigger auto-accept
+    if auto_accept_mode and var.v1:find("OnConsoleMessage") and var.v2:find("wants to add you to a") then
+        local my_netid = tonumber(GetLocal().netid) or tonumber(GetLocal().netID) or 0
+        SendPacket(2, "action|wrench\n|netid|" .. my_netid)
+        SendPacket(2, "action|dialog_return\ndialog_name|popup\nnetID|" .. my_netid .. "|\nbuttonClicked|acceptlock")
+        SendPacket(2, "action|dialog_return\ndialog_name|acceptaccess")
+        auto_accept_hide_ticks = 10
+        ontext("`2ACCESS GRANTED")
+    end
+    
+    
+    if var.v1 == "OnDialogRequest" and type(var.v2) == "string" then
+        local d = var.v2
+        if d:find("drop", 1, true) and (d:find("242", 1, true) or d:find("1796", 1, true) or d:find("7188", 1, true) or d:find("4604", 1, true)) then
+            return true
+        end
+    end
+    if var.v1 == "OnSpawn" then
+        startSpinRestore()
+    end
+
+    -- OnSpawn tidak selalu cukup untuk mendeteksi re-enter/ganti world.
+    if var.v1 == "OnConsoleMessage" then
+        local consoleText = tostring(var.v2 or ""):lower()
+        if consoleText:find("entering", 1, true)
+            or consoleText:find("joined", 1, true)
+            or consoleText:find("entered", 1, true) then
+            startSpinRestore()
+        end
+    end
 
 if Config and Config.autoConvert then
     local payload = type(var.v2) == "string" and var.v2 or ""
@@ -2773,48 +3244,41 @@ if Config and Config.autoConvert then
         local tx = tonumber(Config.autoConvertX)
         local ty = tonumber(Config.autoConvertY)
 
-        if not tx or not ty then
-            return true
+        if tx and ty then
+            if Config.autoConvertStep == 1 then
+                SendPacket(2,
+                    "action|dialog_return\n" ..
+                    "dialog_name|phonecall\n" ..
+                    "tilex|" .. tx .. "\n" ..
+                    "tiley|" .. ty .. "\n" ..
+                    "num|53785\n" ..
+                    "buttonClicked|chc5"
+                )
+
+                Config.autoConvertStep = 2
+
+            elseif Config.autoConvertStep == 2 then
+                SendPacket(2,
+                    "action|dialog_return\n" ..
+                    "dialog_name|phonecall\n" ..
+                    "tilex|" .. tx .. "\n" ..
+                    "tiley|" .. ty .. "\n" ..
+                    "num|-34\n" ..
+                    "buttonClicked|chc0"
+                )
+
+                Config.autoConvertStep = 1
+            end
         end
 
-        if Config.autoConvertStep == 1 then
-            SendPacket(2,
-                "action|dialog_return\n" ..
-                "dialog_name|phonecall\n" ..
-                "tilex|" .. tx .. "\n" ..
-                "tiley|" .. ty .. "\n" ..
-                "num|53785\n" ..
-                "buttonClicked|chc5"
-            )
-
-            Config.autoConvertStep = 2
-
-        elseif Config.autoConvertStep == 2 then
-            SendPacket(2,
-                "action|dialog_return\n" ..
-                "dialog_name|phonecall\n" ..
-                "tilex|" .. tx .. "\n" ..
-                "tiley|" .. ty .. "\n" ..
-                "num|-34\n" ..
-                "buttonClicked|chc0"
-            )
-
-            Config.autoConvertStep = 1
-        end
-
+        -- Hanya sembunyikan dialog Telephone.
         return true
     end
 end
 
-    if var.v1 == "OnDialogRequest" and type(var.v2) == "string" then
-        local d = var.v2
-        if d:find("drop", 1, true) and (d:find("242", 1, true) or d:find("1796", 1, true) or d:find("7188", 1, true) or d:find("4604", 1, true)) then
-            return true
-        end
-    end
-
     if var.v1 == "OnConsoleMessage" then
         local msg = tostring(var.v2 or "")
+
         if msg:match("Collected `w(%d+) World Lock``") then
             wear(242)
             return true
@@ -2846,7 +3310,7 @@ log("\n`#Balance\n`9World Locks : `2"..inv(242).."\n`1Diamond Locks : `2"..inv(1
 return true
 end
 
-if var.v1 == "OnTalkBubble" and var.v3 then
+if var.v1 == "OnTalkBubble" and var.v3 and checkworld() then
     local msg = tostring(var.v3)
 
     if msg:find("spun the wheel and got", 1, true) then
@@ -2876,16 +3340,15 @@ if var.v1 == "OnTalkBubble" and var.v3 then
                 -- Simpan hasil spin terakhir berdasarkan nama dasar, bukan hanya NetID.
                 -- NetID dapat berubah ketika keluar lalu masuk world lain.
                 spinNumbersByName[normalizeSpinName(playerName)] = {
-                    baseName = playerName,
+                    -- Simpan untuk referensi saja; pemulihan warna memakai player list world saat ini.
+                    baseName = getCleanName(playerName),
                     number = tostring(num),
                     color = spinNumberColor
                 }
-                local nameWithSpin = playerName .. " `#[ " .. spinNumberColor .. tostring(num) .. "`# ]"
-                SendVariant({
-                    v1 = "OnNameChanged",
-                    v2 = nameWithSpin,
-                    netID = uidplayer
-                }, uidplayer)
+                local nameWithSpin = buildPlayerDisplayName(
+                    playerName, tostring(num), spinNumberColor, uidplayer
+                )
+                sendSpinNameOnce(nameWithSpin, uidplayer)
             end
 
             -- Pertahankan tampilan Number Only dan Fast Wheel.
@@ -3104,239 +3567,287 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
     return true
 end
 
-    if autocrime then
-local crimeItemNames = {
-    [2292] = "Superpower - Heat Vision",
-    [2294] = "Superpower - Incinerate",
-    [2296] = "Superpower - Flame On!",
-    [2298] = "Superpower - Liquify",
-    [2300] = "Superpower - Overheat",
-    [2308] = "Superpower - Ice Shards",
-    [2310] = "Superpower - Frost Breath",
-    [2312] = "Superpower - Ice Barrier",
-    [2314] = "Superpower - Puddle",
-    [2316] = "Superpower - Frozen Mirror",
-    [2320] = "Superpower - Super Strength",
-    [2322] = "Superpower - Super Speed",
-    [2324] = "Superpower - Enrage",
-    [2326] = "Superpower - Crush",
-    [2328] = "Superpower - Regeneration",
-    [2332] = "Superpower - Shocking Fist",
-    [2334] = "Superpower - Thunderstorm",
-    [2336] = "Superpower - Overcharge",
-    [2338] = "Superpower - Megawatt Pulse"
-}
+if autocrime then
+    local crimeItemNames = {
+        [2292] = "Superpower - Heat Vision",
+        [2294] = "Superpower - Incinerate",
+        [2296] = "Superpower - Flame On!",
+        [2298] = "Superpower - Liquify",
+        [2300] = "Superpower - Overheat",
+        [2308] = "Superpower - Ice Shards",
+        [2310] = "Superpower - Frost Breath",
+        [2312] = "Superpower - Ice Barrier",
+        [2314] = "Superpower - Puddle",
+        [2316] = "Superpower - Frozen Mirror",
+        [2320] = "Superpower - Super Strength",
+        [2322] = "Superpower - Super Speed",
+        [2324] = "Superpower - Enrage",
+        [2326] = "Superpower - Crush",
+        [2328] = "Superpower - Regeneration",
+        [2332] = "Superpower - Shocking Fist",
+        [2334] = "Superpower - Thunderstorm",
+        [2336] = "Superpower - Overcharge",
+        [2338] = "Superpower - Megawatt Pulse"
+    }
 
-local function logCrimeItem(itemID)
-    local itemName = crimeItemNames[tonumber(itemID)] or "Unknown Item"
-    ontext("`2[Crime] `wMenggunakan: `9" .. itemName)
-end
-
-if var.v1:find("OnDialogRequest") then
-    if var.v2:find("Devil Ham``%'s `2Crush`` card `4melted") then
-        liq = "yes"
+    local function logCrimeItem(itemID)
+        local itemName = crimeItemNames[tonumber(itemID)] or "Unknown Item"
+        ontext("`2[Crime] `wMenggunakan: `9" .. itemName)
     end
 
-    if var.v2:find("Ms%. Terry") and var.v2:find("Ban Hammer") then
-        ban = "yes"
-    end
+    if var.v1 == "OnDialogRequest" and type(var.v2) == "string" then
+        local dialog = var.v2
 
-    if var.v2:find("|Battle%!|") then
-        x = var.v2:match("tilex|(%d+)")
-        y = var.v2:match("tiley|(%d+)")
+        -- Proses hanya dialog yang berkaitan dengan Crime.
+        -- Dialog lain, seperti Drop dan Profile, dibiarkan terbuka.
+        local isCrimeDialog =
+            dialog:find("|Battle!|", 1, true)
+            or dialog:find("Fighting Crime", 1, true)
+            or dialog:find("crime_edit", 1, true)
 
-        log("`0 Crime :" .. (var.v2:match("add_textbox|(.*)`` is") or "Unknown"))
-
-        if var.v2:find("Crime in Progress") then
-            c1 = 2298
-            c2 = 2308
-            c3 = 2320
-            c4 = 2324
-            c5 = 2332
+        if not isCrimeDialog then
+            return false
         end
 
-        if var.v2:find("Jimmy Snow") then
-            use1, use2, use3 = c5, c4, c3
-
-        elseif var.v2:find("Big Bertha") then
-            use1, use2, use3 = c1, c4, c3
-
-        elseif var.v2:find("Shockinator") then
-            use1, use2, use3 = c4, c3, c1
-
-        elseif var.v2:find("The Firebug") then
-            use1, use2, use3 = c2, c1, c5
-
-        elseif var.v2:find("Generic Thug") or var.v2:find("Kat 5") then
-            use1, use2, use3 = c4, c3, c2
-
-        elseif var.v2:find("Professor Pummel") then
-            c1, c2, c3, c4, c5 = 2296, 2298, 2300, 2320, 2324
-            use1, use2, use3 = c3, c2, c1
-
-        elseif var.v2:find("Z%. Everett Koop") then
-            c1, c2, c3, c4, c5 = 2296, 2298, 2300, 2320, 2324
-            use1, use2, use3 = c3, c1, c2
-
-        elseif var.v2:find("Dr%. Destructo") then
-            c1, c2, c3, c4, c5 = 2298, 2308, 2310, 2314, 2316
-            step = "0"
-            use1, use2, use3 = c1, c3, c5
-
-        elseif var.v2:find("Dragon Hand") or var.v2:find("Almighty Seth") then
-            c1, c2, c3, c4, c5 = 2308, 2312, 2314, 2326, 2328
-            use1, use2, use3 = c5, c4, 6969
-
-        elseif var.v2:find("Devil Ham") then
-            c1, c2, c3, c4, c5 = 2298, 2332, 2334, 2336, 2338
-            use1, use2, use3, use4, use5 = c1, c4, c5, c3, c2
-            liq = "no"
-            step = "1"
-
-        elseif var.v2:find("Ms%. Terry") then
-            c1, c2, c3, c4, c5 = 2294, 2316, 2322, 2328, 2338
-            use1, use2, use3, use4, use5 = c1, c2, c3, c4, c5
-            ban = "no"
+        if dialog:find("Devil Ham``%'s `2Crush`` card `4melted") then
+            liq = "yes"
         end
 
-        SendPacket(
-            2,
-            "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
-                x .. "|\ntiley|" .. y ..
-                "|\nstate|0||\nbuttonClicked|button_ok\n\nc" ..
-                c1 .. "|1\nc" .. c2 .. "|1\nc" .. c3 ..
-                "|1\nc" .. c4 .. "|1\nc" .. c5 .. "|1\n"
-        )
+        if dialog:find("Ms%. Terry") and dialog:find("Ban Hammer") then
+            ban = "yes"
+        end
 
-    elseif var.v2:find("Fighting Crime") and var.v2:find("Devil Ham") then
-        if liq == "no" then
-            if var.v2:find("c" .. use1) then
-                use = use1
+        if dialog:find("|Battle%!|") then
+            x = dialog:match("tilex|(%d+)")
+            y = dialog:match("tiley|(%d+)")
+
+            log("`0 Crime :" .. (dialog:match("add_textbox|(.*)`` is") or "Unknown"))
+
+            if dialog:find("Crime in Progress", 1, true) then
+                c1 = 2298
+                c2 = 2308
+                c3 = 2320
+                c4 = 2324
+                c5 = 2332
+            end
+
+            if dialog:find("Jimmy Snow", 1, true) then
+                use1, use2, use3 = c5, c4, c3
+
+            elseif dialog:find("Big Bertha", 1, true) then
+                use1, use2, use3 = c1, c4, c3
+
+            elseif dialog:find("Shockinator", 1, true) then
+                use1, use2, use3 = c4, c3, c1
+
+            elseif dialog:find("The Firebug", 1, true) then
+                use1, use2, use3 = c2, c1, c5
+
+            elseif dialog:find("Generic Thug", 1, true)
+                or dialog:find("Kat 5", 1, true) then
+                use1, use2, use3 = c4, c3, c2
+
+            elseif dialog:find("Professor Pummel", 1, true) then
+                c1, c2, c3, c4, c5 = 2296, 2298, 2300, 2320, 2324
+                use1, use2, use3 = c3, c2, c1
+
+            elseif dialog:find("Z%. Everett Koop") then
+                c1, c2, c3, c4, c5 = 2296, 2298, 2300, 2320, 2324
+                use1, use2, use3 = c3, c1, c2
+
+            elseif dialog:find("Dr%. Destructo") then
+                c1, c2, c3, c4, c5 = 2298, 2308, 2310, 2314, 2316
+                step = "0"
+                use1, use2, use3 = c1, c3, c5
+
+            elseif dialog:find("Dragon Hand", 1, true)
+                or dialog:find("Almighty Seth", 1, true) then
+                c1, c2, c3, c4, c5 = 2308, 2312, 2314, 2326, 2328
+                use1, use2, use3 = c5, c4, 6969
+
+            elseif dialog:find("Devil Ham", 1, true) then
+                c1, c2, c3, c4, c5 = 2298, 2332, 2334, 2336, 2338
+                use1, use2, use3, use4, use5 = c1, c4, c5, c3, c2
+                liq = "no"
+                step = "1"
+
+            elseif dialog:find("Ms%. Terry") then
+                c1, c2, c3, c4, c5 = 2294, 2316, 2322, 2328, 2338
+                use1, use2, use3, use4, use5 = c1, c2, c3, c4, c5
+                ban = "no"
+            end
+
+            if x and y and c1 and c2 and c3 and c4 and c5 then
+                SendPacket(
+                    2,
+                    "action|dialog_return\n" ..
+                    "dialog_name|crime_edit\n" ..
+                    "tilex|" .. x .. "|\n" ..
+                    "tiley|" .. y .. "|\n" ..
+                    "state|0||\n" ..
+                    "buttonClicked|button_ok\n\n" ..
+                    "c" .. c1 .. "|1\n" ..
+                    "c" .. c2 .. "|1\n" ..
+                    "c" .. c3 .. "|1\n" ..
+                    "c" .. c4 .. "|1\n" ..
+                    "c" .. c5 .. "|1\n"
+                )
+            end
+
+        elseif dialog:find("Fighting Crime", 1, true)
+            and dialog:find("Devil Ham", 1, true) then
+
+            if liq == "no" then
+                if use1 and dialog:find("c" .. use1, 1, true) then
+                    use = use1
+                else
+                    use = "passturn"
+                end
+
+            elseif use2 and dialog:find("c" .. use2, 1, true) and step == "0" then
+                step = "1"
+                use = use2
+
+            elseif use3 and dialog:find("c" .. use3, 1, true) then
+                use = use3
+
+            elseif use4 and dialog:find("c" .. use4, 1, true) then
+                use = use4
+
+            elseif use5 and dialog:find("c" .. use5, 1, true) then
+                use = use5
+
             else
                 use = "passturn"
             end
 
-        elseif var.v2:find("c" .. use2) and step == "0" then
-            step = "1"
-            use = use2
-
-        elseif var.v2:find("c" .. use3) then
-            use = use3
-
-        elseif var.v2:find("c" .. use4) then
-            use = use4
-
-        elseif var.v2:find("c" .. use5) then
-            use = use5
-
-        else
-            use = "passturn"
-        end
-
-        if tonumber(use) then
-            logCrimeItem(use)
-        end
-
-        SendPacket(
-            2,
-            "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
-                x .. "|\ntiley|" .. y ..
-                "|\nstate|1||\nbuttonClicked|c" .. use
-        )
-
-    elseif var.v2:find("Fighting Crime") and var.v2:find("Ms%. Terry") then
-        if var.v2:find("is going to play `%d") then
-            local enemyMove = var.v2:match("is going to play `(%d)")
-
-            if enemyMove == "2" then
-                use = use1
-            elseif enemyMove == "4" then
-                use = use2
-            elseif enemyMove == "9" then
-                use = use4
-            elseif enemyMove == "1" then
-                use = use5
+            if tonumber(use) then
+                logCrimeItem(use)
             end
 
-        elseif var.v2:find("c" .. use3) then
-            use = use3
-        elseif var.v2:find("c" .. use5) and ban == "yes" then
-            use = use5
-        elseif var.v2:find("c" .. use1) then
-            use = use1
-        elseif var.v2:find("c" .. use4) then
-            use = use4
-        elseif var.v2:find("c" .. use5) then
-            use = use5
-        elseif var.v2:find("c" .. use2) then
-            use = use2
-        else
-            use = "passturn"
+            if x and y then
+                SendPacket(
+                    2,
+                    "action|dialog_return\n" ..
+                    "dialog_name|crime_edit\n" ..
+                    "tilex|" .. x .. "|\n" ..
+                    "tiley|" .. y .. "|\n" ..
+                    "state|1||\n" ..
+                    "buttonClicked|c" .. use
+                )
+            end
+
+        elseif dialog:find("Fighting Crime", 1, true)
+            and dialog:find("Ms%. Terry") then
+
+            if dialog:find("is going to play `%d") then
+                local enemyMove = dialog:match("is going to play `(%d)")
+
+                if enemyMove == "2" then
+                    use = use1
+                elseif enemyMove == "4" then
+                    use = use2
+                elseif enemyMove == "9" then
+                    use = use4
+                elseif enemyMove == "1" then
+                    use = use5
+                end
+
+            elseif use3 and dialog:find("c" .. use3, 1, true) then
+                use = use3
+            elseif use5 and dialog:find("c" .. use5, 1, true) and ban == "yes" then
+                use = use5
+            elseif use1 and dialog:find("c" .. use1, 1, true) then
+                use = use1
+            elseif use4 and dialog:find("c" .. use4, 1, true) then
+                use = use4
+            elseif use5 and dialog:find("c" .. use5, 1, true) then
+                use = use5
+            elseif use2 and dialog:find("c" .. use2, 1, true) then
+                use = use2
+            else
+                use = "passturn"
+            end
+
+            use = use or "passturn"
+
+            if tonumber(use) then
+                logCrimeItem(use)
+            end
+
+            if x and y then
+                SendPacket(
+                    2,
+                    "action|dialog_return\n" ..
+                    "dialog_name|crime_edit\n" ..
+                    "tilex|" .. x .. "|\n" ..
+                    "tiley|" .. y .. "|\n" ..
+                    "state|1||\n" ..
+                    "buttonClicked|c" .. use
+                )
+            end
+
+        elseif dialog:find("Fighting Crime", 1, true)
+            and dialog:find("Dr%. Destructo") then
+
+            if use1 and dialog:find("c" .. use1, 1, true) and step == "0" then
+                use = use1
+                step = "1"
+            elseif use2 and dialog:find("c" .. use2, 1, true) then
+                use = use2
+            elseif use3 and dialog:find("c" .. use3, 1, true) then
+                use = use3
+            else
+                use = "passturn"
+            end
+
+            if tonumber(use) then
+                logCrimeItem(use)
+            end
+
+            if x and y then
+                SendPacket(
+                    2,
+                    "action|dialog_return\n" ..
+                    "dialog_name|crime_edit\n" ..
+                    "tilex|" .. x .. "|\n" ..
+                    "tiley|" .. y .. "|\n" ..
+                    "state|1||\n" ..
+                    "buttonClicked|c" .. use
+                )
+            end
+
+        elseif dialog:find("Fighting Crime", 1, true) then
+            if use1 and dialog:find("c" .. use1, 1, true) then
+                use = use1
+            elseif use2 and dialog:find("c" .. use2, 1, true) then
+                use = use2
+            elseif use3 and dialog:find("c" .. use3, 1, true) then
+                use = use3
+            else
+                use = "passturn"
+            end
+
+            if tonumber(use) then
+                logCrimeItem(use)
+            end
+
+            if x and y then
+                SendPacket(
+                    2,
+                    "action|dialog_return\n" ..
+                    "dialog_name|crime_edit\n" ..
+                    "tilex|" .. x .. "|\n" ..
+                    "tiley|" .. y .. "|\n" ..
+                    "state|1||\n" ..
+                    "buttonClicked|c" .. use
+                )
+            end
         end
 
-        use = use or "passturn"
-
-        if tonumber(use) then
-            logCrimeItem(use)
-        end
-
-        SendPacket(
-            2,
-            "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
-                x .. "|\ntiley|" .. y ..
-                "|\nstate|1||\nbuttonClicked|c" .. use
-        )
-
-    elseif var.v2:find("Fighting Crime") and var.v2:find("Dr%. Destructo") then
-        if var.v2:find("c" .. use1) and step == "0" then
-            use = use1
-            step = "1"
-        elseif var.v2:find("c" .. use2) then
-            use = use2
-        elseif var.v2:find("c" .. use3) then
-            use = use3
-        else
-            use = "passturn"
-        end
-
-        if tonumber(use) then
-            logCrimeItem(use)
-        end
-
-        SendPacket(
-            2,
-            "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
-                x .. "|\ntiley|" .. y ..
-                "|\nstate|1||\nbuttonClicked|c" .. use
-        )
-
-    elseif var.v2:find("Fighting Crime") then
-        if var.v2:find("c" .. use1) then
-            use = use1
-        elseif var.v2:find("c" .. use2) then
-            use = use2
-        elseif var.v2:find("c" .. use3) then
-            use = use3
-        else
-            use = "passturn"
-        end
-
-        if tonumber(use) then
-            logCrimeItem(use)
-        end
-
-        SendPacket(
-            2,
-            "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
-                x .. "|\ntiley|" .. y ..
-                "|\nstate|1||\nbuttonClicked|c" .. use
-        )
+        return true
     end
-
-    return true
 end
-    end
-
 
     if relogPending and (var.v1 == "OnConsoleMessage" or var.v1 == "OnSpawn") then
         local world = (type(GetWorldName) == "function" and GetWorldName()) or ""
@@ -3346,6 +3857,12 @@ end
                 SendPacket(3, "action|join_request\nname|" .. relogWorld .. "\ninvitedWorld|0")
             end
             relogPending = false
+        end
+    end
+    
+        if var.v1 == "OnTalkBubble" and var.v3 then
+        if tostring(var.v3):find("You need to be", 1, true) then
+            return true
         end
     end
 
@@ -3358,22 +3875,31 @@ if type(a) ~= "table" then
     return false
 end
 
-if a.type == 11 then
-local objects = (type(GetObjectList) == "function" and GetObjectList()) or (type(getObjectList) == "function" and getObjectList()) or {}
-for _, obj in pairs(objects) do
-if obj.id == a.value then
-if obj.itemid == 112 then
-cg = cg + (tonumber(obj.amount) or 0)
-end
-break
-end
-end
+        if auto_accept_hide_ticks > 0 then auto_accept_hide_ticks = auto_accept_hide_ticks - 1 end
+
+if a.type == 11 and checkworld() then
+    local objects = kouGetObjectListSafe()
+    if type(objects) == "table" then
+        for _, obj in pairs(objects) do
+            if type(obj) == "table" and obj.id == a.value then
+                if tonumber(obj.itemid) == 112 then
+                    local pickedAmount = tonumber(obj.amount) or 1
+                    cg = (tonumber(cg) or 0) + pickedAmount
+
+                    if show_gems_collected then
+                        collectedCounterGems = (tonumber(collectedCounterGems) or 0) + pickedAmount
+                    end
+                end
+                break
+            end
+        end
+    end
 end
 if a.type == 3 then
 cg = 0
 end
 
-if visual_gems_mode then
+if visual_gems_mode and checkworld() then
     if type(a) == "table" then
         if a.type == 0 then
             local tx = a.px or (a.x and math.floor(a.x / 32))
@@ -3758,19 +4284,16 @@ return false
 end
 
 function OnGamePacket(game)
-if visual_gems_mode then
-    if type(game) == "table" then
-        if game.type == 14 and game.value == 112 then
-            local tx = math.floor((game.x or 0) / 32)
-            local ty = math.floor((game.y or 0) / 32)
-            triggerParticleAt(tx, ty, 150)
-        end
-    end
+    if visual_gems_mode and type(game) == "table"
+        and game.type == 14 and game.value == 112 then
+        local tx = math.floor((game.x or 0) / 32)
+        local ty = math.floor((game.y or 0) / 32)
+        triggerParticleAt(tx, ty, 150)
     end
     return false
-    end
+end
 
-function OnValue(type, name, value)
+function OnValue(packetType, name, value)
 if name == "checkcollectedgems" then
 SendPacket(2,"action|input\n|text|Collected `#+"..cg.." `7Gems")
 log("`9Gems `7Lu `#"..cg.."`7 y")
@@ -3812,11 +4335,6 @@ end
 if name == "droppayout" then
 execute_payout(5)
 return true
-end
-
-if name == "takegems" then
-takegems()
-ontext("Gems has been taked")
 end
 
 if name == "takingblock" then
@@ -3971,13 +4489,17 @@ if name == "scan_gems" then
         return true
     end
 
-    if name == "show_gems_collected" then
+    if name == "show_collected_gems_toggle" then
+        local normalizedValue = tostring(value):lower()
         local enabled = value == true
             or value == 1
-            or value == "1"
-            or value == "true"
+            or normalizedValue == "1"
+            or normalizedValue == "true"
+            or normalizedValue == "on"
 
         show_gems_collected = enabled
+        collectedCounterGems = 0
+        lastGemGainTime = 0
 
         ontext("`9Show Gems Collected : " ..
             (show_gems_collected and "`2ON" or "`4OFF"))
@@ -3987,51 +4509,6 @@ if name == "scan_gems" then
 
 return false
 end
-
--- Pasang kembali angka spin setelah masuk/pindah world.
--- Cache tidak dihapus saat keluar world; nama akan diperbarui saat player list tersedia.
-runThread(function()
-    local lastWorld = ""
-    while true do
-        Sleep(1000)
-        local worldName = ""
-        if type(GetWorldName) == "function" then
-            local ok, result = pcall(GetWorldName)
-            if ok and type(result) == "string" then worldName = result end
-        elseif type(getWorld) == "function" then
-            local ok, result = pcall(getWorld)
-            if ok and type(result) == "table" then worldName = tostring(result.name or "") end
-        end
-
-        if worldName ~= "" and worldName ~= "EXIT" then
-            if type(getPlayerList) == "function" then
-                local ok, players = pcall(getPlayerList)
-                if ok and type(players) == "table" then
-                    for _, player in pairs(players) do
-                        local netid = tonumber(player.netid or player.netID)
-                        local rawPlayerName = tostring(player.name or "")
-                        local baseName = getCleanName(rawPlayerName)
-                        local saved = spinNumbersByName[normalizeSpinName(baseName)]
-                        if netid and saved and saved.number then
-                            local desiredName = (saved.baseName or baseName) .. " `7[" .. (saved.color or "`b") .. saved.number .. "`7]"
-                            local hasSavedNumber = rawPlayerName:match("%[.*" .. tostring(saved.number) .. "`7%]%s*$") ~= nil
-                            if not hasSavedNumber then
-                                pcall(function()
-                                    SendVariant({
-                                        v1 = "OnNameChanged",
-                                        v2 = desiredName,
-                                        netID = netid
-                                    }, netid)
-                                end)
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        lastWorld = worldName
-    end
-end)
 
 local hookApi = addHook or AddHook
 if type(hookApi) == "function" then
