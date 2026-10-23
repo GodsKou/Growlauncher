@@ -430,7 +430,7 @@ spintext = nil
 uidplayer = nil
 
 GTPS = true
-systemlog = "`7[ `4KillYourIdol `7]`o "
+systemlog = "`7[ `4KILLYOURIDOL `7]`o "
 date = os.date("%d, %b, %Y")
 tanggal = os.date("%d")
 bulan = os.date("%B")
