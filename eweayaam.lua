@@ -1,9 +1,3 @@
-
--- KOU PROJECT UI
--- Menggunakan format JSON sub-menu yang memang dipakai oleh Kou Project lama.
--- Format ini mempertahankan isi menu MOD MENU dan CSN MENU secara utuh.
-
-
 pref = require("preferences")
 
 pref:new("KouProjectConfig")
@@ -18,245 +12,384 @@ fasttake = pref:get("fasttake", false)
 noparticle = pref:get("noparticle", false)
 blink_color = pref:get("blink_color", false)
 
+-- Keep relog state between hook callbacks; do not reset it on every packet.
+local relogWorld = nil
+local relogPending = false
+
+local checklist = {
+    blinkMode = pref:get("checklist_blinkMode", false) == true
+}
+
+local blinkThreadRunning = false
+
+local function applyChecklistBlink()
+    -- Both the checklist option and the legacy blink_color option share one thread.
+    blinking = (checklist.blinkMode == true) or (blink_color == true)
+
+    if blinking and not blinkThreadRunning then
+        blinkThreadRunning = true
+        runThread(function()
+            local ok, err = pcall(setblink)
+            if not ok then
+                log("`4[Blink] Thread error: " .. tostring(err))
+            end
+            blinkThreadRunning = false
+        end)
+    end
+end
+
+local function saveChecklist()
+    local ok, err = pcall(function()
+        pref:set("checklist_blinkMode", checklist.blinkMode)
+        pref:save()
+    end)
+
+    if not ok then
+        log("`4[Checklist] Gagal menyimpan: " .. tostring(err))
+        return false
+    end
+
+    log("`2[Checklist] Konfigurasi berhasil disimpan.")
+    return true
+end
+
+local function openChecklist()
+    local dialog = [[
+set_default_color|`o
+add_label_with_icon|big|`wChecklist Settings|left|32|
+add_spacer|small|
+]]
+
+    dialog = dialog
+        .. "add_checkbox|blink_mode|`wBlink Mode|"
+        .. (checklist.blinkMode and "1" or "0") .. "|\n"
+
+    dialog = dialog .. [[
+add_spacer|small|
+end_dialog|checklist_dialog|Cancel|Save|
+]]
+
+    SendVariant({v1 = "OnDialogRequest", v2 = dialog})
+end
+
+local function parseChecklistFields(packet)
+    local fields = {}
+    for line in packet:gmatch("[^\r\n]+") do
+        local key, value = line:match("^([^|]+)|([^|]*)$")
+        if key then
+            fields[key] = value
+        end
+    end
+    return fields
+end
+
+local function processChecklistReturn(packet)
+    local fields = parseChecklistFields(packet)
+
+    -- Tombol Cancel tidak mengubah konfigurasi yang tersimpan.
+    if fields.buttonClicked == "Cancel" then
+        return true
+    end
+
+    -- Dialog ini hanya memiliki checkbox Blink Mode.
+    if fields.blink_mode == nil then
+        log("`4[Checklist] Data checkbox Blink Mode tidak ditemukan.")
+        return true
+    end
+
+    checklist.blinkMode = fields.blink_mode == "1"
+
+    if not saveChecklist() then
+        return true
+    end
+
+    applyChecklistBlink()
+    log("`2[Checklist] Blink Mode: " .. (checklist.blinkMode and "ON" or "OFF"))
+    return true
+end
 
 modmeno = [[
-
-{"sub_name" : "MOD MENU",
-"icon" : "Wrench",
-"description" : "Mod Menu from PowerKuy",
-"menu" : [
 {
-    "type": "button",
-    "text": "Scan Floating Items",
-    "alias": "cheat_growscan_open_floating"
-},
-{
-     "type": "button",
-     "text": "Scan Block",
-     "alias": "cheat_growscan_open_block"
-},
-{
-    "text": "FindPath",
-    "description": "Teleport to target block, use the findpath item and click target tile. You will be automatically teleported.",
-    "type": "toggle",
-    "default": false
-},
-{
-    "text": "ModFly",
-    "description": "Fly like creative mode",
-    "type": "toggle",
-    "default": false
-},
-{
-     "text": "Growz V2",
-     "description": "Give more speed to your player",
-     "type": "toggle",
-     "default": ]] .. tostring(growz_enabled) .. [[,
-     "expandable": true,
-     "list_child": [
-         {
-            "text": "Speed Growz",
-            "type": "slider",
-            "min": 0,
-            "max": 8,
-            "use_dot": true,
-            "step":  7,
-            "default": ]] .. tostring(speed_growz) .. [[,
-            "alias": "speed_growz"
+    "sub_name": "MOD TOOLS",
+    "icon": "Wrench",
+    "description": "MODIFICATION CENTER",
+    "menu": [
+        {
+            "type": "labelapp",
+            "icon": "Search",
+            "text": "SCANNER TOOLS",
+            "description": "Scan floating items and blocks"
+        },
+        {
+            "type": "button",
+            "text": "Scan Floating Items",
+            "alias": "cheat_growscan_open_floating"
+        },
+        {
+            "type": "button",
+            "text": "Scan Block",
+            "alias": "cheat_growscan_open_block"
+        },
+        {
+            "type": "labelapp",
+            "icon": "Build",
+            "text": "PLAYER MODIFICATIONS",
+            "description": "Movement and player options"
+        },
+        {
+            "text": "FindPath",
+            "description": "Teleport to a target tile using FindPath",
+            "type": "toggle",
+            "default": false
+        },
+        {
+            "text": "ModFly",
+            "description": "Fly like creative mode",
+            "type": "toggle",
+            "default": false
+        },
+        {
+            "text": "Growz V2",
+            "description": "Adjust player movement speed",
+            "type": "toggle",
+            "default": ]] .. tostring(growz_enabled) .. [[,
+            "expandable": true,
+            "list_child": [
+                {
+                    "text": "Speed Growz",
+                    "type": "slider",
+                    "min": 0,
+                    "max": 8,
+                    "use_dot": true,
+                    "step": 7,
+                    "default": ]] .. tostring(speed_growz) .. [[,
+                    "alias": "speed_growz"
+                }
+            ]
+        },
+        {
+            "type": "labelapp",
+            "icon": "Speed",
+            "text": "PERFORMANCE",
+            "description": "Rendering and item collection"
+        },
+        {
+            "type": "toggle",
+            "text": "Antilag",
+            "description": "Skip render background",
+            "default": ]] .. tostring(antilag) .. [[,
+            "alias": "cheat_antilag",
+            "autosave": true
+        },
+        {
+            "type": "toggle",
+            "text": "No Particle",
+            "description": "Skip all render particles",
+            "default": ]] .. tostring(noparticle) .. [[,
+            "alias": "config_cheat_noparticle",
+            "autosave": true
+        },
+        {
+            "type": "toggle",
+            "text": "Fast Drop",
+            "description": "Enable fast drop mode",
+            "default": ]] .. tostring(fastdrop) .. [[,
+            "alias": "cheat_config_fastdrop_active",
+            "autosave": true
+        },
+        {
+            "type": "toggle",
+            "text": "Fast Take",
+            "description": "Instantly picks up items without delay",
+            "default": ]] .. tostring(fasttake) .. [[
+        }
+    ]
 }
-]
-},
-{
-    "type": "toggle",
-    "text": "Antilag",
-    "default": ]] .. tostring(antilag) .. [[,
-    "alias": "cheat_antilag",
-    "description": "Skip render background",
-    "autosave": true
-},
-{
-    "type": "toggle",
-    "text": "No Particle",
-    "default": ]] .. tostring(noparticle) .. [[,
-    "alias": "config_cheat_noparticle",
-    "description": "Skip all render particles",
-    "autosave": true
-},
-{
-    "type": "toggle",
-    "text": "Fast Drop",
-    "alias": "cheat_config_fastdrop_active",
-    "default": ]] .. tostring(fastdrop) .. [[,
-    "autosave": true
-},
-{
-    "text":"Fast Take",
-    "type":"toggle",
-    "description": "Instantly picks up items without delay",
-    "default": ]] .. tostring(fasttake) .. [[
-}
-
-
-
-
-]
-}
-
 ]]
 
 csnmeno = [[
-
-{"sub_name" : "CSN MENU",
-"icon" : "RemoveRedEye",
-"description" : "CSN PROXY",
-"menu" : [
 {
-    "type": "dropdown",
-    "value": "[\"NUMBER ONLY\",\"FAST WHEEL\",\"REME\",\"LEME\",\"LEWA\"]",
-    "default": 0,
-    "alias": "game_mode",
-    "text": "CSN MODE",
-    "description": "Select game mode"
-},
-              {
-                "type": "input_string",
-                "alias": "save_world",
-                "text": "SAVE WORLD",
-                "default": "]]..saveworldsaved..[[",
-                "icon" : "LocationOn",
-                "label": "World Name",
-                "placeholder": "EXIT"
-              },
-              {
-     "text": "Warp To Save",
-     "type": "button",
-     "icon": "bolt",
-     "alias": "wptosave"
-},
-{
-   "type": "labelapp",
-   "icon": "RemoveRedEye",
-   "text": "ID Checker",
-   "description": "ID Checker."
-},
-{
-  "type": "item_picker",
-  "text": "ID Finder",
-  "item": "Blank",
-  "default": "Blank",
-  "alias": "selected_item"
+    "sub_name": "CSN CENTER",
+    "icon": "RemoveRedEye",
+    "description": "GAME MODE CENTER",
+    "menu": [
+        {
+            "type": "labelapp",
+            "icon": "Tune",
+            "text": "GAME CONFIGURATION",
+            "description": "Select your preferred game mode"
+        },
+        {
+            "type": "dropdown",
+            "value": "[\"NUMBER ONLY\",\"FAST WHEEL\",\"REME\",\"LEME\",\"LEWA\"]",
+            "default": 0,
+            "alias": "game_mode",
+            "text": "CSN MODE",
+            "description": "Select game mode"
+        },
+        {
+            "type": "labelapp",
+            "icon": "LocationOn",
+            "text": "WORLD SETTINGS",
+            "description": "Configure your saved destination"
+        },
+        {
+            "type": "input_string",
+            "alias": "save_world",
+            "text": "SAVE WORLD",
+            "default": "]] .. saveworldsaved .. [[",
+            "icon": "LocationOn",
+            "label": "World Name",
+            "placeholder": "EXIT"
+        },
+        {
+            "type": "button",
+            "text": "Warp To Save",
+            "icon": "Bolt",
+            "alias": "wptosave"
+        },
+        {
+            "type": "labelapp",
+            "icon": "Search",
+            "text": "ITEM IDENTIFICATION",
+            "description": "Find and select item IDs"
+        },
+        {
+            "type": "item_picker",
+            "text": "ID Finder",
+            "item": "Blank",
+            "default": "Blank",
+            "alias": "selected_item"
+        }
+    ]
 }
-
-
-]
-}
-
 ]]
 
 bjmeno = [[
-
-{"sub_name" : "BJ MENU",
-"icon" : "RemoveRedEye",
-"description" : "BJ MENU",
-"menu" : [
 {
-    "text": "BTK",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "btkbutton"
-},
-{
-    "text": "Take Bet",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "takebet"
-},
-{
-    "text": "Drop Tax",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "droptax"
-},
-{
-    "text": "Drop Payout",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "droppayout"
-},
-{
-    "text": "Drop To Player 1",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "win1"
-},
-{
-    "text": "Drop To Player 2",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "win2"
-},
-{
-    "text": "Drop To Player 3",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "win3"
-},
-{
-    "text": "Drop To Player 4",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "win4"
-},
-{
-   "type": "labelapp",
-   "icon": "RemoveRedEye",
-   "text": "BJ Action Menu",
-   "description": "BJ Action Menu."
-},
-{
-    "text": "Take Gems",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "takegems"
-},
-{
-     "text": "Take Block",
-     "type": "button",
-     "icon": "bolt",
-     "alias": "takingblock"
-},
-{
-    "text": "Check Gems",
-    "type": "button",
-    "icon": "bolt",
-    "alias": "checkgemss"
-},
-{
-     "text": "Show collected gems",
-     "type": "button",
-     "icon": "bolt",
-     "alias": "checkcollectedgems"
-},
-{
-     "text": "Scan Gems",
-     "type": "button",
-     "icon": "bolt",
-     "alias": "scan_gems"
-},
-{
-    "text": "Scan Gems Repeat",
-    "description": "Repeat Scan Gems",
-    "type": "toggle",
-    "default": false,
-    "alias": "scan_gems_repeat"
+    "sub_name": "BJ CENTER",
+    "icon": "RemoveRedEye",
+    "description": "BJ ACTION CENTER",
+    "menu": [
+    {
+            "type": "labelapp",
+            "icon": "RemoveRedEye",
+            "text": "BJ ACTION MENU",
+            "description": "Quick access to item actions"
+        },
+                {
+            "text": "Show Collected Gems",
+            "type": "toggle",
+            "icon": "Bolt",
+            "alias": "show_collected_gems"
+        },
+        {
+            "text": "Scan Gems Mode",
+            "description": "Scan Gems",
+            "type": "toggle",
+            "default": false,
+            "alias": "scan_gems"
+        },
+        {
+            "text": "Scan Gems Repeat",
+            "description": "Repeat Scan Gems",
+            "type": "toggle",
+            "default": false,
+            "alias": "scan_gems_repeat"
+        },
+        {
+            "text": "Take Gems",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "takegems"
+        },
+        {
+            "text": "Take Block",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "takingblock"
+        },
+        {
+            "text": "Check Gems",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "checkgemss"
+        },
+        {
+            "text": "Show Collected Gems",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "checkcollectedgems"
+        },
+        {
+            "text": "Scan Gems",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "scan_gems1x"
+        },
+        {
+            "type": "labelapp",
+            "icon": "Bolt",
+            "text": "BET MANAGEMENT",
+            "description": "Bet and payout actions"
+        },
+        {
+            "text": "BTK",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "btkbutton"
+        },
+        {
+            "text": "Take Bet",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "takebet"
+        },
+        {
+            "text": "Drop Tax",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "droptax"
+        },
+        {
+            "text": "Drop Payout",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "droppayout"
+        },
+        {
+            "type": "labelapp",
+            "icon": "RemoveRedEye",
+            "text": "PLAYER PAYOUTS",
+            "description": "Select the target player"
+        },
+        {
+            "text": "Drop To Player 1",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "win1"
+        },
+        {
+            "text": "Drop To Player 2",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "win2"
+        },
+        {
+            "text": "Drop To Player 3",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "win3"
+        },
+        {
+            "text": "Drop To Player 4",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "win4"
+        }
+    ]
 }
-
-
-]
-}
-
 ]]
-
 
 require("IniEy")
 addCategory("KOU PROJECT", "settings")
@@ -265,21 +398,10 @@ addIntoModule(csnmeno, "KOU PROJECT")
 addIntoModule(bjmeno, "KOU PROJECT")
 sendNotification("KOU PROXY")
 
-
-
-
-
--- Logging limits and database
 world_logs = {}
 spin_logs = {}
 max_logs_limit = 50
 
--- =========================================
--- SPIN LOG DATABASE
--- =========================================
-
--- FUNCTION: add_log
--- INFO: Menyimpan pesan ke database log dan membatasi jumlah log.
 function add_log(table_ref, msg)
     local clean_msg = tostring(msg or ""):gsub("\n", " ")
     table.insert(table_ref, 1, clean_msg)
@@ -288,8 +410,6 @@ function add_log(table_ref, msg)
     end
 end
 
--- FUNCTION: show_logs_menu
--- INFO: Menampilkan menu untuk memilih database World Logs atau Spin Logs.
 function show_logs_menu()
     local logs_menu = [[set_default_color|`o
 add_label_with_icon|big|`bCCTV Logs System|left|32|
@@ -316,12 +436,6 @@ tanggal = os.date("%d")
 bulan = os.date("%B")
 tahun = os.date("%Y")
 hari = os.date("%A")
-historywl = "`7[`b" .. os.date("%X") .. "`7]`w You've Collected `60 WL"
-historywls = "`7[`b" .. os.date("%X") .. "`7]`w You've Dropped `60 WL"
-historydl = "`7[`b" .. os.date("%X") .. "`7]`w You've Collected `10 DL"
-historydls = "`7[`b" .. os.date("%X") .. "`7]`w You've Dropped `10 DL"
-historybgl = "`7[`b" .. os.date("%X") .. "`7]`w You've Collected `c0 BGL"
-historybgls = "`7[`b" .. os.date("%X") .. "`7]`w You've Dropped `c0 BGL"
 modfly = 0
 tele = 0
 checktile = false
@@ -332,7 +446,8 @@ checkdl = growtopia.checkInventory(1796)
 checkbgl = growtopia.checkInventory(7188)
 auto_bgl_mode = false
 collectedgems = false
-nick = GetLocal().name
+local localPlayerAtStart = (type(GetLocal) == "function" and GetLocal()) or nil
+nick = (type(localPlayerAtStart) == "table" and localPlayerAtStart.name) or "Player"
 cg = 0
 auto_drop_count = 0
 local player1x
@@ -385,11 +500,11 @@ Aount = betwl
 data ={}
 taxset = "5"
 saved_tax = 0
-weatherid = "0"
+local savedWeather = tonumber(pref:get("saved_weather", nil))
 auto_accept_mode = false
 auto_accept_hide_ticks = 0
 punchgems = false
-blinking = false
+blinking = (checklist.blinkMode == true) or (blink_color == true)
 kouproject = true
 auto_me_mode = false
 gemsrepeat = false
@@ -409,8 +524,6 @@ Config = {
     blink = false
 	}
 
--- FUNCTION: notify
--- INFO: Menampilkan notifikasi Growtopia.
 function notify(msg)
     if growtopia and growtopia.notify then
         growtopia.notify(msg)
@@ -418,17 +531,11 @@ function notify(msg)
     log(msg)
 end
 
-
-
--- FUNCTION: message
--- INFO: Mengirim pesan input ke chat.
 function message(hax)
 SendPacket(2,"action|input\ntext|(troll) "..hax.."")
 return true
 end
 
--- FUNCTION: kou
--- INFO: Mengirim notifikasi KOU PROJECT.
 function kou(var)
 var = {}
 var.v1 = "OnAddNotification"
@@ -438,8 +545,6 @@ SendVariant(var)
 return true
 end
 
--- FUNCTION: wear
--- INFO: Menggunakan item berdasarkan Item ID.
 function wear(id)
     local pkt = {}
     pkt.type = 10
@@ -447,8 +552,6 @@ function wear(id)
     SendPacketRaw(false, pkt)
 end
 
--- FUNCTION: dialog
--- INFO: Mengirim permintaan dialog ke client.
 function dialog(tkss)
 va = {}
 va.v1 = "OnDialogRequest"
@@ -456,24 +559,24 @@ va.v2 = tkss
 SendVariant(va)
 end
 
--- FUNCTION: log
--- INFO: Menulis pesan ke console dengan prefix system log.
 function log(str)
 LogToConsole(systemlog .. str)
 end
 
--- FUNCTION: ontalk
--- INFO: Menampilkan pesan melalui TalkBubble player lokal.
 function ontalk(str)
-s = {}
-s.v1 = "OnTalkBubble"
-s.v2 = GetLocal().netID
-s.v3 = str
-SendVariant(s)
+    local me = (type(GetLocal) == "function" and GetLocal()) or nil
+    if type(me) ~= "table" then return end
+
+    local variant = {
+        v1 = "OnTalkBubble",
+        v2 = me.netID or me.netid,
+        v3 = tostring(str or "")
+    }
+    if variant.v2 then
+        SendVariant(variant)
+    end
 end
 
--- FUNCTION: ontext
--- INFO: Menampilkan pesan melalui TextOverlay.
 function ontext(str)
 o = {}
 o.v1 = "OnTextOverlay"
@@ -481,14 +584,14 @@ o.v2 = str
 SendVariant(o)
 end
 
--- FUNCTION: notify
--- INFO: Menampilkan notifikasi Growtopia.
 function notify(str)
-growtopia.notify(str)
+    if growtopia and type(growtopia.notify) == "function" then
+        growtopia.notify(tostring(str or ""))
+    else
+        log(tostring(str or ""))
+    end
 end
 
--- FUNCTION: greenbox
--- INFO: Mengirim packet untuk menampilkan/menandai posisi tile.
 function greenbox(x, y)
     SendPacketRaw(true, {
         type = 38,
@@ -496,8 +599,6 @@ function greenbox(x, y)
     })
 end
 
--- FUNCTION: path
--- INFO: Mengirim state posisi player ke tile tujuan dengan arah yang dipilih.
 function path(x, y, is_left)
     local f_state = 32
     local x_off = 8
@@ -508,8 +609,6 @@ function path(x, y, is_left)
     SendPacketRaw(false, {type = 0, x = x*32 + x_off, y = y*32, state = f_state})
 end
 
--- FUNCTION: inv
--- INFO: Mengambil jumlah item tertentu dari inventory.
 function inv(id)
     for _, item in pairs(GetInventory()) do
         local i_id = item.id or item.itemid
@@ -521,8 +620,6 @@ function inv(id)
     return 0
 end
 
--- FUNCTION: checkitm
--- INFO: Mengecek jumlah item tertentu di inventory.
 function checkitm(id)
     local inv = GetInventory()
     if type(inv) ~= "table" then return 0 end
@@ -534,7 +631,6 @@ function checkitm(id)
     return 0
 end
 
-
 function repeatgems()
 while gemsrepeat do
 ScanGemsParticle()
@@ -542,49 +638,52 @@ Sleep(2000)
 end
 end
 
-
--- FUNCTION: setblink
--- INFO: Menjalankan animasi perubahan warna skin selama blinking aktif.
 function setblink()
-while blinking do
-        SendPacket(2,     "action|setSkin\ncolor|3370516479")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|3033464831")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|2864971775")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|2527912447")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|2190853119")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|2022356223")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|1685231359")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|1348237567")
-        Sleep(150)
-        --
-        SendPacket(2,     "action|setSkin\ncolor|1348237567")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|1685231359")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|2022356223")
-        Sleep(150)
-        SendPacket(2,     "action|setSkin\ncolor|2190853119")
-            Sleep(150)
-            SendPacket(2,   "action|setSkin\ncolor|2527912447")
-            Sleep(150)
-            SendPacket(2,   "action|setSkin\ncolor|2864971775")
-            Sleep(150)
-            SendPacket(2,   "action|setSkin\ncolor|3033464831")
-            Sleep(150)
-            SendPacket(2,   "action|setSkin\ncolor|3370516479")
-            Sleep(150)
-      end
-      end
+    local colors = {
+        3370516479,
+        3033464831,
+        2864971775,
+        2527912447,
+        2190853119,
+        2022356223,
+        1685231359,
+        1348237567,
+        1348237567,
+        1685231359,
+        2022356223,
+        2190853119,
+        2527912447,
+        2864971775,
+        3033464831,
+        3370516479
+    }
 
--- FUNCTION: toggleAutoConvert
--- INFO: Mengaktifkan atau menonaktifkan Auto Convert.
+    while blinking do
+        local worldName = (type(GetWorldName) == "function" and GetWorldName()) or ""
+
+        -- Do not send gameplay packets while connecting, disconnected, or outside a world.
+        if worldName ~= "" and worldName ~= "EXIT" then
+            for _, color in ipairs(colors) do
+                if not blinking then break end
+
+                local currentWorld = (type(GetWorldName) == "function" and GetWorldName()) or ""
+                if currentWorld == "" or currentWorld == "EXIT" then
+                    break
+                end
+
+                SendPacket(2, "action|setSkin\ncolor|" .. tostring(color))
+                Sleep(150)
+            end
+        else
+            Sleep(1000)
+        end
+    end
+end
+
+if checklist.blinkMode or blink_color then
+    applyChecklistBlink()
+end
+
 function toggleAutoConvert()
     Config.autoConvert = not Config.autoConvert
     if Config.autoConvert then
@@ -597,30 +696,19 @@ function toggleAutoConvert()
     end
 end
 
-
-
--- FUNCTION: dropItem
--- INFO: Membuka dialog drop dan menentukan jumlah item yang akan dijatuhkan.
 function dropItem(itemID, count)
     SendPacket(2, "action|drop\n|itemID|" .. itemID)
     SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|" .. itemID .. "\ncount|" .. count)
 end
--- FUNCTION: dropgtps
--- INFO: Mengirim dialog drop dengan format packet GTPS.
 function dropgtps(id, count)
 SendPacket(2, "action|dialog_return\ndialog_name|drop\nitem_drop|"..id.."|\nitem_count|"..count)
 end
 
--- FUNCTION: rdrop
--- INFO: Menjalankan drop item dengan jumlah tertentu.
 function rdrop(id, amount)
     SendPacket(2, "action|drop\n|itemID|"..id)
     SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|"..id.."|\ncount|"..amount)
 end
 
--- Batch drop bypass
--- FUNCTION: autodrop
--- INFO: Membagi proses drop menjadi batch dengan batas 200 item.
 function autodrop(id, amount)
     local left = amount
     while left > 200 do
@@ -634,11 +722,6 @@ function autodrop(id, amount)
     end
 end
 
-
-
-
--- FUNCTION: pos
--- INFO: Membuat teks tampilan koordinat posisi.
 function pos(px,py)
 local hasil
 if not px and not py then
@@ -649,7 +732,6 @@ end
 return hasil
 end
 
-
 tile = {
 pos1 = {
 {x = gemsrightx1, y = gemsrighty1}, {x = gemsrightx2, y = gemsrighty2}, {x = gemsrightx3, y = gemsrighty3}, {x = gemsrightx4, y = gemsrighty4}, {x = gemsrightx5, y = gemsrighty5}, {x = gemsrightx6, y = gemsrighty6}, {x = gemsrightx7, y = gemsrighty7}, {x = gemsrightx8, y = gemsrighty8}
@@ -659,8 +741,6 @@ pos2 = {
 }
 }
 
--- FUNCTION: takegems
--- INFO: Mengambil gem pada tile posisi yang telah dikonfigurasi dan menentukan hasil.
 function takegems()
 tile = (tile);
 Count = 0;
@@ -713,8 +793,6 @@ data = {};
 end;
 end
 
--- FUNCTION: takeblock
--- INFO: Mengambil object pada tile posisi yang telah dikonfigurasi.
 function takeblock()
     tile = tile
 
@@ -725,22 +803,18 @@ function takeblock()
             return false
         end
 
-        -- Ambil posisi object
         local objX = tonumber(obj.posX)
         local objY = tonumber(obj.posY)
 
-        -- Jika posX/posY tidak tersedia, gunakan obj.pos.x/y
         if (not objX or not objY) and obj.pos then
             objX = tonumber(obj.pos.x)
             objY = tonumber(obj.pos.y)
         end
 
-        -- Cek posisi object
         if not objX or not objY then
             return false
         end
 
-        -- Cek posisi tile
         local tileX = tonumber(tiles.x)
         local tileY = tonumber(tiles.y)
 
@@ -761,7 +835,6 @@ function takeblock()
 
     local objects = GetObjectList() or {}
 
-    -- Take POS1
     for _, obj in pairs(objects) do
         for _, tiles in pairs(tile.pos1 or {}) do
             if isObjectInTile(obj, tiles) then
@@ -788,7 +861,6 @@ function takeblock()
         end
     end
 
-    -- Take POS2
     for _, obj in pairs(objects) do
         for _, tiles in pairs(tile.pos2 or {}) do
             if isObjectInTile(obj, tiles) then
@@ -818,17 +890,12 @@ function takeblock()
     return false
 end
 
--- FUNCTION: checkgems
--- INFO: Menghitung gem pada area konfigurasi tanpa mengambilnya.
 function checkgems()
     tile = tile
 
     local data = {0, 0}
     local objects = GetObjectList() or {}
 
-    -- Toleransi dalam pixel.
-    -- Contoh: 12 berarti gem masih dianggap berada di tile
-    -- walaupun posisi object keluar sampai 12 pixel dari batas tile.
     local GEM_TOLERANCE = 10
 
     local function isGemInTile(obj, tiles)
@@ -854,8 +921,6 @@ function checkgems()
                y >= top and y <= bottom
     end
 
-    -- Cegah object yang sama dihitung dua kali jika area tolerance
-    -- dari beberapa tile saling overlap.
     local counted1 = {}
     local counted2 = {}
 
@@ -895,11 +960,9 @@ function checkgems()
     local p1 = data[2]
     local p2 = data[1]
 
-    -- KEDUANYA LEBIH DARI 21
     if p1 > 21 and p2 > 21 then
 
         if p1 < p2 then
-            -- Player 1 lebih kecil, jadi Player 1 menang
       SendPacket(2,
                 "action|input\n|text|" ..
                 "`0[ Player1 ] : `2" .. p1 ..
@@ -912,7 +975,6 @@ function checkgems()
             cg1 = p1
 
         elseif p2 < p1 then
-            -- Player 2 lebih kecil, jadi Player 2 menang
             SendPacket(2,
                 "action|input\n|text|" ..
                 "`0[ Player1 ] : `4" .. p1 ..
@@ -925,7 +987,6 @@ function checkgems()
             cg2 = p2
 
         else
-            -- Sama-sama >21 dan jumlah sama
             SendPacket(2,
                 "action|input\n|text|" ..
                 "`0[ Player1 ] : `w" .. p1 ..
@@ -936,8 +997,6 @@ function checkgems()
             log("`9Nothing Winner `4TIE!")
         end
 
-
-    -- HANYA PLAYER 1 > 21
     elseif p1 > 21 then
         SendPacket(2,
             "action|input\n|text|" ..
@@ -950,8 +1009,6 @@ function checkgems()
 
         cg2 = p2
 
-
-    -- HANYA PLAYER 2 > 21
     elseif p2 > 21 then
         SendPacket(2,
             "action|input\n|text|" ..
@@ -964,8 +1021,6 @@ function checkgems()
 
         cg1 = p1
 
-
-    -- KEDUANYA MASIH <= 21
     elseif p1 > p2 then
         SendPacket(2,
             "action|input\n|text|" ..
@@ -991,7 +1046,6 @@ function checkgems()
         cg2 = p2
 
     else
-        -- Jumlah sama
         SendPacket(2,
             "action|input\n|text|" ..
             "`0[ Player1 ] : `w" .. p1 ..
@@ -1005,10 +1059,6 @@ function checkgems()
     return false
 end
 
-
-
--- FUNCTION: execute_payout
--- INFO: Menghitung payout dan menjalankan proses drop hadiah.
 function execute_payout(mode)
     if not Aount or Aount == 0 then
         ontext("`4Warning: Bet value is 0.")
@@ -1026,7 +1076,6 @@ function execute_payout(mode)
         v5 = 1
     })
 
-    -- Menentukan posisi payout berdasarkan mode
     if mode == 1 then
         if player1x ~= nil and player1y ~= nil then
             local face_left = false
@@ -1086,11 +1135,9 @@ function execute_payout(mode)
         end
     end
 
-    -- Menghitung jumlah BGL, DL, dan WL
     local drop_bgl = math.floor(jumlah / 10000)
     local rem = jumlah % 10000
 
-    -- Menyesuaikan jumlah BGL dengan inventory
     local bgl_inventory = inv(7188)
 
     if bgl_inventory < drop_bgl then
@@ -1101,7 +1148,6 @@ function execute_payout(mode)
     local drop_dl = math.floor(rem / 100)
     local drop_wl = rem % 100
 
-    -- Memastikan jumlah item yang akan digunakan tersedia
     if inv(242) < drop_wl then
         if inv(1796) > drop_dl then
             wear(1796)
@@ -1115,7 +1161,6 @@ function execute_payout(mode)
         wear(7188)
     end
 
-    -- Menjatuhkan payout
     if drop_bgl > 0 then
         autodrop(7188, drop_bgl)
     end
@@ -1139,26 +1184,49 @@ function execute_arroz(mode, count)
         return
     end
 
+    local targetX, targetY
+    local face_left = false
+
     if mode == 1 then
-        local face_left = false
+        targetX, targetY = player1x, player1y
 
         if player1x < player2x then
             face_left = true
         end
 
-        greenbox(player1x, player1y)
-        path(player1x, player1y, face_left)
-
     elseif mode == 2 then
-        local face_left = false
+        targetX, targetY = player2x, player2y
 
         if player2x < player1x then
             face_left = true
         end
 
-        greenbox(player2x, player2y)
-        path(player2x, player2y, face_left)
+    elseif mode == 3 then
+        targetX, targetY = player3x, player3y
+
+        if player3x < player4x then
+            face_left = true
+        end
+
+    elseif mode == 4 then
+        targetX, targetY = player4x, player4y
+
+        if player4x < player3x then
+            face_left = true
+        end
+
+    else
+        ontext("`4Warning: Invalid mode.")
+        return
     end
+
+    if targetX == nil or targetY == nil then
+        ontext("`4Warning: Player position is not set.")
+        return
+    end
+
+    greenbox(targetX, targetY)
+    path(targetX, targetY, face_left)
 
     autodrop(4604, count)
 
@@ -1166,55 +1234,6 @@ function execute_arroz(mode, count)
     log("`2Dropped `9" .. count .. " `0Arroz")
 end
 
-function checkbox(value)
-    if value then
-        return "1"
-    end
-
-    return "0"
-end
-
-function checklist()
-
-    local listmod =
-        "set_default_color|`o\n" ..
-        "add_label_with_icon|big|`9Multi Checklist|left|32|\n" ..
-        "add_spacer|small|\n" ..
-
-        "add_checkbox|blink_color|`2Blink Color|" ..
-        checkbox(blink_color) .. "|\n" ..
-
-        "add_checkbox|option_2|`2Option 2|" ..
-        checkbox(option_2) .. "|\n" ..
-
-        "add_checkbox|option_3|`2Option 3|" ..
-        checkbox(option_3) .. "|\n" ..
-
-        "add_checkbox|option_4|`2Option 4|" ..
-        checkbox(option_4) .. "|\n" ..
-
-        "add_checkbox|option_5|`2Option 5|" ..
-        checkbox(option_5) .. "|\n" ..
-
-        "add_spacer|small|\n" ..
-        "end_dialog|" .. DIALOG_NAME .. "|Cancel|Save|"
-
-    growtopia.sendDialog(listmod)
-end
-
-function getCheckbox(packet, name, current)
-
-    local value = packet:match(name .. "|(%d+)")
-
-    if value then
-        return tonumber(value) == 1
-    end
-
-    return current
-end
-
--- FUNCTION: btk
--- INFO: Membuka menu konfigurasi BTK.
 function btk()
 setupbtk =  [[
 set_bg_color|2, 0, 1, 100|
@@ -1252,13 +1271,10 @@ dialog(setupbtk)
 return true
 end
 
--- FUNCTION: take
--- INFO: Mengambil item taruhan dan memproses data taruhan.
 function take()
     local total_pos1, total_pos2 = 0, 0
     local total_pos3, total_pos4 = 0, 0
 
-    -- Daftar posisi player
     local player_positions = {
         {x = player1x, y = player1y},
         {x = player2x, y = player2y},
@@ -1266,7 +1282,6 @@ function take()
         {x = player4x, y = player4y}
     }
 
-    -- Menentukan player yang posisinya aktif
     local active_players = {}
 
     for i, pos in ipairs(player_positions) do
@@ -1289,7 +1304,6 @@ function take()
 
     local objects = GetObjectList()
 
-    -- Menghitung total lock di sekitar setiap player aktif
     if objects then
         for _, obj in pairs(objects) do
             local bx = math.floor(obj.posX / 32)
@@ -1329,7 +1343,6 @@ function take()
     total_pos3 = totals[3]
     total_pos4 = totals[4]
 
-    -- Memeriksa apakah ada lock pada posisi player aktif
     local any_locks = false
 
     for _, i in ipairs(active_players) do
@@ -1344,7 +1357,6 @@ function take()
         return true
     end
 
-    -- Validasi bet hanya untuk player aktif
     local reference_total = totals[active_players[1]]
 
     for _, i in ipairs(active_players) do
@@ -1360,7 +1372,6 @@ function take()
         end
     end
 
-    -- Mengambil lock dari posisi player aktif
     local total_picked = 0
 
     if objects then
@@ -1409,7 +1420,6 @@ function take()
         end
     end
 
-    -- Menghitung payout dan tax
     if total_picked > 0 then
         Aount = math.floor(total_picked / 2)
 
@@ -1438,8 +1448,6 @@ function take()
     return true
 end
 
-    -- FUNCTION: droptax
-    -- INFO: Menjalankan proses drop tax yang tersimpan.
     function droptax()
             if saved_tax <= 0 then ontext("`4No tax saved."); return true end
         local target = saved_tax
@@ -1462,9 +1470,7 @@ end
         saved_tax = 0
         return true
     end
-    
-    -- FUNCTION: kouFloatingScanner
--- INFO: Menampilkan semua floating item di world dan menyediakan pencarian berdasarkan nama.
+
 kou_floating_objects = {}
 kou_floating_search = ""
 
@@ -1626,7 +1632,7 @@ local function triggerParticleAt(tx, ty, delay)
             Sleep(800)
             spawnGemsParticle(tx, ty, total)
             Sleep(800)
-            spawnGemsParticle(tx, ty, total) 
+            spawnGemsParticle(tx, ty, total)
         end
     end)
 end
@@ -1678,7 +1684,6 @@ end
     local function sendGemCounterChat(message)
         SendPacket(2, "action|input\n|text|" .. message)
     end
-    
 
 runThread(function()
     while true do
@@ -1710,7 +1715,6 @@ runThread(function()
                 Sleep(1000)
             end
         else
-            -- Reset baseline saat fitur dimatikan.
             previousCounterGems = getGems() or 0
             collectedCounterGems = 0
             lastGemGainTime = 0
@@ -1721,19 +1725,32 @@ runThread(function()
 end)
 
 local function getCleanName(rawName)
-    if not rawName then return "Player" end
-    local clean = rawName:gsub("%s*`7%[`.%d+`7%]", "")
-    clean = clean:gsub("%s*%[`.%d+%]", "")
+    if rawName == nil then return "Player" end
+    local clean = tostring(rawName)
+    -- Hilangkan akhiran angka spin, baik memakai kode warna maupun tidak.
+    clean = clean:gsub("%s*`7%[%s*`?.?%d+`?%s*%]$", "")
+    clean = clean:gsub("%s*%[%s*`?.?%d+`?%s*%]$", "")
     clean = clean:gsub("%s*%[%d+%]%s*$", "")
-    return clean:match("^%s*(.-)%s*$") or rawName
+    return clean:match("^%s*(.-)%s*$") or tostring(rawName)
 end
+
+-- Nama dinormalisasi agar cache tetap cocok meskipun kode warna/nama tampilan berubah.
+local function normalizeSpinName(rawName)
+    local name = getCleanName(rawName)
+    name = name:gsub("`.", "")
+    return name:lower():match("^%s*(.-)%s*$") or name:lower()
+end
+
+-- Cache tetap hidup ketika world berganti; tidak mengembalikan nama ke nama asli.
+local spinNameOriginals = {}
+local spinNumbersByName = {}
 
 local function getPlayerName(netid)
     if getPlayerList then
         local ok, list = pcall(getPlayerList)
         if ok and type(list) == "table" then
             for _, p in pairs(list) do
-                if (p.netid or p.netID) == netid then
+                if tonumber(p.netid or p.netID) == tonumber(netid) then
                     return getCleanName(p.name)
                 end
             end
@@ -1741,27 +1758,25 @@ local function getPlayerName(netid)
     end
     if getLocal then
         local ok, me = pcall(getLocal)
-        if ok and type(me) == "table" and (me.netid or me.netID) == netid then
+        if ok and type(me) == "table" and tonumber(me.netid or me.netID) == tonumber(netid) then
             return getCleanName(me.name)
         end
     end
-    return "Player"
+    return nil
 end
+
 
 local function calculate(expression)
     if not expression or expression == "" then
         return nil
     end
 
-    -- Hapus semua spasi
     expression = expression:gsub("%s+", "")
 
-    -- Hanya izinkan angka, operator, titik, dan tanda kurung
     if expression:find("[^%d%.%+%-%*/%(%)%%%^]") then
         return nil
     end
 
-    -- Pastikan titik desimal tidak berulang dalam satu angka
     for number in expression:gmatch("[%d%.]+") do
         local _, count = number:gsub("%.", "")
         if count > 1 then
@@ -1769,7 +1784,6 @@ local function calculate(expression)
         end
     end
 
-    -- Evaluasi ekspresi
     local fn, err = load("return " .. expression)
     if not fn then
         return nil
@@ -1786,25 +1800,18 @@ local function calculate(expression)
 
     return nil
 end
-    
 
-
-
-log("`9Hello , " .. GetLocal().name .. " Welcome Back")
+local startupPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
+local startupName = (type(startupPlayer) == "table" and startupPlayer.name) or "Player"
+log("`9Hello, " .. tostring(startupName) .. " Welcome Back")
 Sleep(500)
 log("`bKamu Bermain Di `0Hari`9 "..hari.." `0Tanggal`c "..tanggal.." `0Bulan`c "..bulan.." `0 Tahun`9 "..tahun.."")
 log("`#Ketik /proxy untuk melihat command.")
 
-
-
--- FUNCTION: hook
--- INFO: Menangani command dan event packet yang masuk.
 function hook(type, str, packet)
 
 str = tostring(str or "")
 
--- Pemeriksa command: case-insensitive, tanpa find() atau match().
--- Mengambil bagian terakhir packet, misalnya text|/pROxY.
 local input = str:lower():gsub("^.*|", ""):gsub("^%s+", ""):gsub("%s+$", "")
 
 local function cmd(command)
@@ -1815,11 +1822,23 @@ local function cmd(command)
     return input:sub(1, #expected + 1) == expected .. " "
 end
 
+if cmd("/option") then
+    openChecklist()
+    return true
+end
+
+if str:find("action|dialog_return", 1, true)
+    and str:find("dialog_name|checklist_dialog", 1, true) then
+    return processChecklistReturn(str)
+end
+
 if cmd("/proxy") or input == "cmd" then
+local currentPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
+local currentName = (type(currentPlayer) == "table" and currentPlayer.name) or "Player"
 gazette = [[add_label_with_icon|big|`9PROXY Commands    ````       |left|32|
 add_spacer|small|
 add_smalltext|`9Welcome, to the `5#1 Best OPEN SOURCE Proxy `9script.|left|
-add_smalltext|`9What will you do today?, ]]..GetLocal().name..[[|left|
+add_smalltext|`9What will you do today?, ]]..tostring(currentName)..[[|left|
 add_spacer|small|
 add_label_with_icon|small|`5Information:|left|3524|
 add_spacer|small|
@@ -1866,8 +1885,6 @@ dialog(gazette)
 return true
 end
 
--- FUNCTION: weather
--- INFO: Menampilkan menu daftar Weather ID.
 function weather()
 weatherid = [[
 set_default_color|`o
@@ -1945,42 +1962,30 @@ add_spacer|small|
 
 add_textbox|`9General Tools|left|
 text_scaling_string|SubsToIptxtxD|
-add_button_with_icon|fcbgl|`wFast Change BGL|staticRedFrame|7188|
-add_button_with_icon|setupbtkk|`6BTK Setup|staticRedFrame|340|
-add_button_with_icon|weatherr|`wWeather|staticRedFrame|934|
-add_button_with_icon|scan_floating|`3Scan Floating|staticRedFrame|6016|
-add_button_with_icon|auto_crime|`4Auto Crime|staticRedFrame|2380|
-add_button_with_icon|friends|`eSocial|staticRedFrame|9474|
-
+add_button_with_icon|fcbgl|`wFast Change BGL|staticPurpleFrame|7188|
+add_button_with_icon|setupbtkk|`6BTK Setup|staticPurpleFrame|340|
+add_button_with_icon|weatherr|`wWeather|staticPurpleFrame|934|
+add_button_with_icon|scan_floating|`3Scan Floating|staticPurpleFrame|6016|
+add_button_with_icon|auto_crime|`4Auto Crime|staticPurpleFrame|2380|
+add_button_with_icon|friends|`eSocial|staticPurpleFrame|9474|
 add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
-
 add_textbox|`9Gems Tools|left|
 text_scaling_string|SubsToIptxtxD|
-add_button_with_icon|gems_collected|`2Gems Collected|staticRedFrame|14542|
-add_button_with_icon|visual_gems_mode|`9Visual Gems|staticRedFrame|14542|
-add_button_with_icon|gems_repeat|`9Gems Repeat|staticRedFrame|14542|
-add_button_with_icon|open_logs|`9Logs|staticRedFrame|14542|
-add_button_with_icon|closeopenvent|`9Door Open|staticRedFrame|14542|
-
-
+add_button_with_icon|open_logs|`9Logs|staticPurpleFrame|10668|
 add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
-
 end_dialog|k||Back|
 ]]
 dialog(mmenu)
 return true
 end
 
-
-        -- Show logs
     if cmd("/logs") or str:find("buttonClicked|open_logs") then
         show_logs_menu()
         return true
     end
 
-    -- CCTV log interaction
 local spin_search = ""
 
 local function show_spin_logs(query)
@@ -2000,7 +2005,6 @@ local function show_spin_logs(query)
         if spin_search == ""
             or log:lower():find(spin_search:lower(), 1, true) then
 
-            -- Warnai nama player di awal log menjadi hijau
             log = log:gsub("^(%S+)", "`2%1`o", 1)
 
             d = d .. "add_textbox|" .. log .. "|left|\n"
@@ -2019,7 +2023,6 @@ local function show_spin_logs(query)
     dialog(d)
 end
 
--- Dialog menu utama
 if str:find("dialog_name|logs_menu_main", 1, true) then
 
     if str:find("buttonClicked|btn_world_logs", 1, true) then
@@ -2044,7 +2047,6 @@ if str:find("dialog_name|logs_menu_main", 1, true) then
     end
 end
 
--- Respons tombol dialog Roulette Logs
 if str:find("action|dialog_return", 1, true)
     and str:find("dialog_name|logs_view", 1, true) then
 
@@ -2066,19 +2068,23 @@ end
         return true
     end
 
-        if cmd("/relog") then
-        local wname = GetWorldName()
-        if wname and wname ~= "" and wname ~= "EXIT" then
-            SendPacket(3, "action|quit_to_exit")
-            Sleep(500)
-            SendPacket(3, "action|join_request\nname|" .. wname)
-        else
-            ontext("`4You are not currently in a world.")
-        end
-        return true
+if cmd("/relog") then
+    local wname = GetWorldName()
+
+    if wname and wname ~= "" and wname ~= "EXIT" then
+        relogWorld = wname
+        relogPending = true
+        SendPacket(3, "action|quit_to_exit")
+    else
+        ontext("`4You are not currently in a world.")
     end
 
+    return true
+end
 
+if relogPending and str:find("action|quit_to_exit", 1, true) then
+        return false
+    end
 
 if str:find("buttonClicked|btkbutton") then
 btk()
@@ -2093,28 +2099,14 @@ end
             blink_color
         )
 
-
-        -- ======================================
-        -- SAVE KE PREFERENCES
-        -- ======================================
-
         pref:set("blink_color", blink_color)
-
-
         pref:save()
-
+        applyChecklistBlink()
 
         log("`2Checklist Saved")
 
         return true
     end
-
-
-if blink_color then
-runThread(function()
-setblink()
-end)
-end
 
 if str:find("buttonClicked|friends") then
 SendPacket(2,"action|friends\ndelay|0\n")
@@ -2132,16 +2124,18 @@ ontext("`9Visual Gems Mode : " .. (visual_gems_mode and "`2ON" or "`4OFF"))
 return true
 end
 
-local weather_id = str:match("buttonClicked|weather_(%d+)")
+local weatherChoice = str:match("buttonClicked|weather_(%d+)")
 
-    if weather_id then
-        weather_id = tonumber(weather_id)
-
-        if weather_id >= 1 and weather_id <= 40 then
-            growtopia.setWeather(weather_id)
-            return true
-        end
+if weatherChoice then
+    weatherChoice = tonumber(weatherChoice)
+    if weatherChoice >= 1 and weatherChoice <= 40 then
+        savedWeather = weatherChoice
+        pref:set("saved_weather", savedWeather)
+        pref:save()
+        growtopia.setWeather(savedWeather)
+        return true
     end
+end
 
 if str:find("buttonClicked|mod_menu") or cmd("/modmenu") then
 checklist()
@@ -2291,8 +2285,6 @@ ontext("`9Punch Position Back")
 return true
 end
 
-
-
 if cmd("/checktile") then
 checktile = not checktile
 ontext("`2Checktile: " .. (checktile and "`2ON" or "`4OFF"))
@@ -2300,25 +2292,16 @@ log("`2Checktile: " .. (checktile and "`2ON" or "`4OFF"))
 return true
 end
 
-
-
-
 if cmd("/tg") or str:find("buttonClicked|ck") then
 takegems()
 return true
 end
-
 
 if str:find("buttonClicked|fcbgl") then
 toggleAutoConvert()
 return true
 end
 
-if str:find("buttonClicked|gems_collected") then
-show_gems_collected = not show_gems_collected
-ontext("`2Show Gems Collected: " .. (show_gems_collected and "`2ON" or "`4OFF"))
-return true
-end
 
 if str:find("buttonClicked|auto_crime") then
 autocrime = not autocrime
@@ -2334,16 +2317,19 @@ log("`2Succesfully Drop `0"..jumlah.." `9Arroz!")
 return true
 end
 
-if string.match(input, "/arroz1 (%d+)") then
-    execute_arroz(1, tonumber(string.match(input, "/arroz1 (%d+)")))
+local amount = input:match("^/arroz%d+ (%d+)$")
+if amount then
+    if input:match("^/arroz1 ") then
+        execute_arroz(1, tonumber(amount))
+    elseif input:match("^/arroz2 ") then
+        execute_arroz(2, tonumber(amount))
+    elseif input:match("^/arroz3 ") then
+        execute_arroz(3, tonumber(amount))
+    elseif input:match("^/arroz4 ") then
+        execute_arroz(4, tonumber(amount))
+    end
     return true
 end
-
-if string.match(input, "/arroz2 (%d+)") then
-    execute_arroz(2, tonumber(string.match(input, "/arroz2 (%d+)")))
-    return true
-end
-
 
      if string.match(input, "/dd (%d+)") then
 local amount = string.match(input, "/dd (%d+)")
@@ -2370,19 +2356,13 @@ end
 
 if string.match(input, "^/db (%d+)$") then
     local jumlah = tonumber(string.match(input, "^/db (%d+)$"))
-
     if jumlah > 0 then
         dropItem(7188, jumlah)
-
         ontalk("`2Successfully Dropped `0" .. jumlah .. " `eBlue Gem Locks!")
         log("`2Successfully Dropped `0" .. jumlah .. " `eBlue Gem Locks!")
     end
-
     return true
 end
-
-
-
 
 if string.match(input, "/cd (%d+)") then
 local target = string.match(input, "/cd (%d+)")
@@ -2419,8 +2399,6 @@ log("`2Balance: `9"..hailto.."`2 WL (`9"..inv(7188).." `2BGL, `9"..inv(1796).." 
 return true
 end
 
-
-
 if cmd("/daw") then
         local wl, dl, bgl = inv(242), inv(1796), inv(7188)
         if wl > 0 then autodrop(242, wl) end
@@ -2445,7 +2423,6 @@ end)
     if auto_bgl_mode then
     toggleAutoConvert()
     end
-
 
 if cmd("/res") then
 growtopia.notify("`2Respawn Succesful.")
@@ -2502,8 +2479,6 @@ log("`2Opening setup BTK")
 return true
 end
 
-
-
     if str:find([[
 action|dialog_return
 dialog_name|setupcoy
@@ -2513,7 +2488,7 @@ ontalk("`4Tax Set To : `9"..taxset.."")
 log("`4Tax Set To : `9"..taxset.."")
 return true
   end
-  
+
 if str:find("/settax (%d+%.?%d*)") then
     taxset = tonumber(str:match("/settax (%d+%.?%d*)"))
 
@@ -2593,26 +2568,28 @@ ontext("Pos player 4 Removed")
 return true
 end
 
-
-
-if string.match(input, "/weather (%d+)") then
-local id = string.match(input, "/weather (%d+)")
-if id then
-growtopia.setWeather(tonumber(id))
-log("Weather changed to ID: " .. id)
+if string.match(input, "^/weather (%d+)$") then
+    local id = tonumber(string.match(input, "^/weather (%d+)$"))
+    if id and id >= 1 and id <= 40 then
+        savedWeather = id
+        pref:set("saved_weather", savedWeather)
+        pref:save()
+        growtopia.setWeather(savedWeather)
+        log("Weather changed to ID: " .. id)
+    else
+        log("`4Weather ID harus antara 1 sampai 40.")
+    end
+    return true
 end
-return true
-end
-
 
 if cmd("/blink") then
-blinking = not blinking
-ontext("`2Blinking Skin: " .. (blinking and "`2ON" or "`4OFF"))
-log("`2Blinking Skin: " .. (blinking and "`2ON" or "`4OFF"))
-runThread(function()
-setblink()
-end)
-return true
+    checklist.blinkMode = not checklist.blinkMode
+    pref:set("checklist_blinkMode", checklist.blinkMode)
+    pref:save()
+    applyChecklistBlink()
+    ontext("`2Blinking Skin: " .. (blinking and "`2ON" or "`4OFF"))
+    log("`2Blinking Skin: " .. (blinking and "`2ON" or "`4OFF"))
+    return true
 end
     if string.match(input, "/bet (%d+)") then
         Aount = tonumber(match)
@@ -2624,7 +2601,7 @@ end
         log("`w[ BET1 ] : `9" .. Aount .. " WL\n`w[ BET2 ] : `9" .. Aount .. " WL\n`w[ TOTAL ] : `9" .. total_picked .. " WL\n`w [ PAYOUT ] : `9" .. payout_after_tax .. " WL\n`4 [ TAX ] : `9" .. tax_deduction .. " WL")
         return true
     end
-    
+
     if str:find("/calc ", 1, true) then
     local expression = str:match("/calc%s+(.+)")
 
@@ -2654,19 +2631,17 @@ end
             ontext("`4Invalid calculation!")
         end
     else
-        ontext("`4Usage: /calc 4*5") 
+        ontext("`4Usage: /calc 4*5")
     end
 
     return true
 end
-
 
 if cmd("/tp") then
 take()
 return true
 end
 
-    -- Drop tax
 if cmd("/dt") then
 droptax()
 return true
@@ -2677,20 +2652,18 @@ showRadar()
 return true
 end
 
-        -- Payout drops
     if cmd("/w1") then execute_payout(1); return true end
     if cmd("/w2") then execute_payout(2); return true end
     if cmd("/w3") then execute_payout(3); return true end
     if cmd("/w4") then execute_payout(4); return true end
     if cmd("/gd") then execute_payout(5); return true end
 
-
     if cmd("/autome") then
         auto_me_mode = not auto_me_mode
         ontext("`2Auto /me Mode: " .. (auto_me_mode and "`2ON" or "`4OFF"))
         return true
     end
-    
+
 if string.match(input, "/drop (%d+) (%d+)") then
 local id = string.match(input, "/drop (%d+)")
 local amount = string.match(input, "/drop "..id.." (%d+)")
@@ -2710,78 +2683,84 @@ end
         return true
     end
 
-    -- Auto /me chat
     if auto_me_mode and str:find("action|input\n|text|") then
-        local chat_msg = packet:match("text|(.*)")
+        local chat_msg = str:match("text|(.*)")
         if chat_msg and chat_msg:sub(1,1) ~= "/" then
             SendPacket(2, "action|input\n|text|/me " .. chat_msg)
             return true
         end
     end
-    
-    
 
-        -- Split fractional drop
-    if string.match(input, "/split (%d+)") then
-        local pct = string.match(input, "/split (%d+)")
-        if pct > 100 then pct = 100 end
-        if pct < 0 then pct = 0 end
+if string.match(input, "^/split%s+(%d+)$") then
+    local pct = tonumber(string.match(input, "^/split%s+(%d+)$"))
+    pct = math.max(0, math.min(100, pct))
 
-        local total_wl = inv(242) + (inv(1796) * 100) + (inv(7188) * 10000)
-        local target = math.floor(total_wl * (pct / 100))
-        if target <= 0 then return true end
+    local wl = inv(242) or 0
+    local dl = inv(1796) or 0
+    local bgl = inv(7188) or 0
 
-        local b_drop = math.floor(target / 10000)
-        local rem = target % 10000
-        if inv(7188) < b_drop then
-            rem = rem + ((b_drop - inv(7188)) * 10000)
-            b_drop = inv(7188)
-        end
+    local total_wl = wl + (dl * 100) + (bgl * 10000)
+    local target = math.floor(total_wl * pct / 100)
 
-        local d_drop = math.floor(rem / 100)
-        local w_drop = rem % 100
-
-        if inv(242) < w_drop then
-            if inv(1796) > d_drop then wear(1796)
-            elseif inv(7188) > b_drop then wear(7188); wear(1796) end
-        end
-        if inv(1796) < d_drop and inv(7188) > b_drop then wear(7188) end
-
-        if b_drop > 0 then autodrop(7188, b_drop) end
-        if d_drop > 0 then autodrop(1796, d_drop) end
-        if w_drop > 0 then autodrop(242, w_drop) end
-
-        ontext("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `9" .. w_drop .. " WL")
+    if target <= 0 then
+        ontext("`4Nothing to drop.")
         return true
     end
 
+    local b_drop = math.min(math.floor(target / 10000), bgl)
+    local rem = target - (b_drop * 10000)
+
+    local d_drop = math.min(math.floor(rem / 100), dl)
+    rem = rem - (d_drop * 100)
+
+    local w_drop = math.min(rem, wl)
+
+    local actual = (b_drop * 10000) + (d_drop * 100) + w_drop
+
+    if actual <= 0 then
+        ontext("`4Tidak ada item yang dapat di-drop.")
+        return true
+    end
+
+    if b_drop > 0 then
+        autodrop(7188, b_drop)
+    end
+
+    if d_drop > 0 then
+        autodrop(1796, d_drop)
+    end
+
+    if w_drop > 0 then
+        autodrop(242, w_drop)
+    end
+
+    ontext(
+        "`2Dropped: "
+        .. "`9" .. b_drop .. " BGL  "
+        .. "`9" .. d_drop .. " DL  "
+        .. "`9" .. w_drop .. " WL"
+    )
+
+    return true
+end
 
 return false
 end
 
--- FUNCTION: var
--- INFO: Menangani VariantList dari client/server.
 function var(var)
     if type(var) ~= "table" then
         return false
     end
     var.v1 = tostring(var.v1 or "")
-    -- Keep v2 as-is for dialog payloads; normalize only before text matching.
-
--- =========================================
--- AUTO CONVERT LOOP
--- =========================================
 
 if Config and Config.autoConvert then
     local payload = type(var.v2) == "string" and var.v2 or ""
 
-    -- Sembunyikan pesan konversi selesai
     if payload:find("Wow, that's fast delivery.", 1, true) then
         Config.autoConvertStep = 1
         return true
     end
 
-    -- Proses setiap respons Telephone
     if var.v1 == "OnDialogRequest"
     and payload:find("Telephone", 1, true) then
 
@@ -2823,12 +2802,10 @@ if Config and Config.autoConvert then
             Config.autoConvertStep = 1
         end
 
-        -- Sembunyikan dialog Telephone
         return true
     end
 end
 
-    -- Suppress drop dialogs
     if var.v1 == "OnDialogRequest" and type(var.v2) == "string" then
         local d = var.v2
         if d:find("drop", 1, true) and (d:find("242", 1, true) or d:find("1796", 1, true) or d:find("7188", 1, true) or d:find("4604", 1, true)) then
@@ -2836,7 +2813,6 @@ end
         end
     end
 
-    -- Auto-wear WL
     if var.v1 == "OnConsoleMessage" then
         local msg = tostring(var.v2 or "")
         if msg:match("Collected `w(%d+) World Lock``") then
@@ -2844,8 +2820,6 @@ end
             return true
         end
     end
-
-
 
    if var.v1 == "OnConsoleMessage" and tostring(var.v2 or ""):find("list of valid", 1, true) then
 log("`4Gada Command Begitu Njing")
@@ -2872,14 +2846,6 @@ log("\n`#Balance\n`9World Locks : `2"..inv(242).."\n`1Diamond Locks : `2"..inv(1
 return true
 end
 
--- =========================================
--- SPIN LOG HANDLER
--- =========================================
-
-    -- =========================================
-    -- CSN / FAST WHEEL HANDLER
-    -- =========================================
-
 if var.v1 == "OnTalkBubble" and var.v3 then
     local msg = tostring(var.v3)
 
@@ -2887,17 +2853,46 @@ if var.v1 == "OnTalkBubble" and var.v3 then
         uidplayer = tonumber(var.v2)
         spintext = msg
 
-        -- NUMBER ONLY: ubah bubble asal supaya teks "spun the wheel" tidak muncul.
-        if Config.gameMode == "number_only" or Config.gameMode == "number" then
-            local clean = msg:gsub("`.", "")
-            local num = tonumber(clean:match("got.-(%d+)"))
-            if num then
-                -- Simpan warna asli yang tepat berada sebelum angka pada pesan wheel.
-                spinNumberColor = msg:match("got.-(`.)%d+") or "`w"
-                local fake = msg:find("<") ~= nil and msg:find(">") ~= nil
-                local status = fake and "`4FAKE" or "`^REAL"
-                var.v3 = "`w[ " .. status .. "`w ] " .. spinNumberColor .. tostring(num)
-                spintext = msg
+        local clean = msg:gsub("`.", "")
+        local num = tonumber(clean:match("got.-(%d+)"))
+        local isFakeSpin = msg:find("OID:", 1, true) ~= nil
+            or (msg:find("<", 1, true) ~= nil and msg:find(">", 1, true) ~= nil)
+
+        if isFakeSpin then
+            -- Tandai fake spin seperti fitur message.lua.
+            local fakeChat = msg:match("player_chat=(.+)") or msg
+            var.v3 = "`7[`4FAKE``] " .. fakeChat
+        elseif num then
+            spinNumberColor = msg:match("got.-(`.)%d+") or "`b"
+
+            -- Tambahkan angka spin di samping nama player untuk semua mode.
+            local playerName = spinNameOriginals[uidplayer] or getPlayerName(uidplayer)
+            if playerName and playerName ~= "" then
+                -- Simpan nama dasar dan pertahankan saat keluar/masuk world.
+                if spinNameOriginals[uidplayer] == nil then
+                    spinNameOriginals[uidplayer] = playerName:gsub("%s+`7%[.*%]$", "")
+                end
+                playerName = spinNameOriginals[uidplayer]
+                -- Simpan hasil spin terakhir berdasarkan nama dasar, bukan hanya NetID.
+                -- NetID dapat berubah ketika keluar lalu masuk world lain.
+                spinNumbersByName[normalizeSpinName(playerName)] = {
+                    baseName = playerName,
+                    number = tostring(num),
+                    color = spinNumberColor
+                }
+                local nameWithSpin = playerName .. " `#[ " .. spinNumberColor .. tostring(num) .. "`# ]"
+                SendVariant({
+                    v1 = "OnNameChanged",
+                    v2 = nameWithSpin,
+                    netID = uidplayer
+                }, uidplayer)
+            end
+
+            -- Pertahankan tampilan Number Only dan Fast Wheel.
+            if Config.gameMode == "number_only" or Config.gameMode == "number" then
+                var.v3 = "`w[ `2REAL`w ] " .. spinNumberColor .. tostring(num)
+            else
+                var.v3 = "`7[ `2REAL`` ] " .. msg
             end
         end
         return true
@@ -2906,6 +2901,8 @@ end
 
 if var.v1 == "OnConsoleMessage" and var.v2 then
     local console_msg = tostring(var.v2)
+    local isFakeSpin = console_msg:find("OID:", 1, true) ~= nil
+        or (console_msg:find("<", 1, true) ~= nil and console_msg:find(">", 1, true) ~= nil)
 
     if console_msg:find("spun the wheel and got", 1, true) then
 
@@ -2921,16 +2918,16 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
             return false
         end
 
+        local localPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
         local target_uid = uidplayer
-            or tonumber(GetLocal().netid)
-            or tonumber(GetLocal().netID)
+            or (type(localPlayer) == "table" and tonumber(localPlayer.netid))
+            or (type(localPlayer) == "table" and tonumber(localPlayer.netID))
             or -1
 
         local timestamp = os.date("%H:%M:%S")
 
-        -- NUMBER ONLY / FAST WHEEL: tampilkan status REAL atau FAKE tanpa logic REME/LEME/LEWA.
         if Config.gameMode == "number_only" then
-            if console_msg:find("<") and console_msg:find(">") then
+            if isFakeSpin then
                 if target_uid ~= -1 then
                     SendVariant({
                         v1 = "OnTalkBubble",
@@ -2972,9 +2969,9 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
             uidplayer = nil
             return true
         end
-        
+
                 if Config.gameMode == "number" then
-            if console_msg:find("<") and console_msg:find(">") then
+            if isFakeSpin then
                 if target_uid ~= -1 then
                     SendVariant({
                         v1 = "OnTalkBubble",
@@ -3061,7 +3058,7 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
             end
         end
 
-        if console_msg:find("<") and console_msg:find(">") then
+        if isFakeSpin then
             if target_uid ~= -1 then
                 SendVariant({
                     v1 = "OnTalkBubble",
@@ -3106,7 +3103,7 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
     LogToConsole("" .. systemlog .. " " .. console_msg)
     return true
 end
-    
+
     if autocrime then
 local crimeItemNames = {
     [2292] = "Superpower - Heat Vision",
@@ -3240,7 +3237,6 @@ if var.v1:find("OnDialogRequest") then
             logCrimeItem(use)
         end
 
-
         SendPacket(
             2,
             "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
@@ -3284,7 +3280,6 @@ if var.v1:find("OnDialogRequest") then
             logCrimeItem(use)
         end
 
-
         SendPacket(
             2,
             "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
@@ -3308,7 +3303,6 @@ if var.v1:find("OnDialogRequest") then
             logCrimeItem(use)
         end
 
-
         SendPacket(
             2,
             "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
@@ -3331,7 +3325,6 @@ if var.v1:find("OnDialogRequest") then
             logCrimeItem(use)
         end
 
-
         SendPacket(
             2,
             "action|dialog_return\ndialog_name|crime_edit\ntilex|" ..
@@ -3344,12 +3337,21 @@ if var.v1:find("OnDialogRequest") then
 end
     end
 
+
+    if relogPending and (var.v1 == "OnConsoleMessage" or var.v1 == "OnSpawn") then
+        local world = (type(GetWorldName) == "function" and GetWorldName()) or ""
+
+        if not world or world == "" or world == "EXIT" then
+            if type(relogWorld) == "string" and relogWorld ~= "" then
+                SendPacket(3, "action|join_request\nname|" .. relogWorld .. "\ninvitedWorld|0")
+            end
+            relogPending = false
+        end
+    end
+
     return false
 end
 
-
--- FUNCTION: raw
--- INFO: Menangani Raw TankPacket dari client/server.
 function raw(a)
 
 if type(a) ~= "table" then
@@ -3361,7 +3363,7 @@ local objects = (type(GetObjectList) == "function" and GetObjectList()) or (type
 for _, obj in pairs(objects) do
 if obj.id == a.value then
 if obj.itemid == 112 then
-cg = cg + obj.amount
+cg = cg + (tonumber(obj.amount) or 0)
 end
 break
 end
@@ -3383,9 +3385,6 @@ if visual_gems_mode then
         end
     end
     end
-
-
-
 
 if takerighton == true then
 if a.type == 3 and a.value == 18 then
@@ -3760,7 +3759,7 @@ end
 
 function OnGamePacket(game)
 if visual_gems_mode then
-    if type(game) == "table" then    
+    if type(game) == "table" then
         if game.type == 14 and game.value == 112 then
             local tx = math.floor((game.x or 0) / 32)
             local ty = math.floor((game.y or 0) / 32)
@@ -3771,8 +3770,6 @@ if visual_gems_mode then
     return false
     end
 
--- FUNCTION: OnValue
--- INFO: Menangani perubahan nilai pada UI berdasarkan alias.
 function OnValue(type, name, value)
 if name == "checkcollectedgems" then
 SendPacket(2,"action|input\n|text|Collected `#+"..cg.." `7Gems")
@@ -3785,9 +3782,6 @@ if name == "btkbutton" then
 btk()
 kou()
 end
-
-
-
 
 if name == "takebet" then
 take()
@@ -3820,8 +3814,6 @@ execute_payout(5)
 return true
 end
 
-
-
 if name == "takegems" then
 takegems()
 ontext("Gems has been taked")
@@ -3837,7 +3829,6 @@ if name == "checkgemss" then
 checkgems()
 ontext("Gems checking is launching")
 end
-
 
 if name == "game_mode" then
 if value == 0 then
@@ -3883,14 +3874,13 @@ growtopia.warpTo(""..saveworldsaved.."")
         pref:save()
     end
 
-
     if name == "cheat_antilag" then
     antilag = value
 
     pref:set("antilag", value)
         pref:save()
         end
-        
+
             if name == "Fast Take" then
     fasttake = value
 
@@ -3906,7 +3896,7 @@ growtopia.warpTo(""..saveworldsaved.."")
 
         if name == "cheat_config_fastdrop_active" then
         fastdrop = value
-        pref:set("fastdrp", value)
+        pref:set("fastdrop", value)
         pref:save()
         end
 
@@ -3938,28 +3928,111 @@ growtopia.warpTo(""..saveworldsaved.."")
 
         return true
     end
-    
-        if name == "scan_gems" then
+
+        if name == "scan_gems1x" then
         ScanGemsParticle()
 end
 
-
-
-
     if name == "scan_gems_repeat" then
+        -- Samakan toggle UI dengan fungsi Gems Repeat pada dialog.
+        local enabled = value == true or value == 1 or value == "true"
+        gemsrepeat = enabled
 
+        ontext("`2Gems Repeat : " .. (gemsrepeat and "`2ON" or "`4OFF"))
+
+        if gemsrepeat then
+            runThread(function()
+                repeatgems()
+            end)
+        end
+
+        return true
+    end
+    
+if name == "scan_gems" then
+        local enabled = value == true
+            or value == 1
+            or value == "1"
+            or value == "true"
+
+        visual_gems_mode = enabled
+
+        if visual_gems_mode then
+            runThread(function()
+                if visual_gems_mode then
+                    ScanGemsParticle()
+                end
+            end)
+        end
+
+        ontext("`9Visual Gems Mode : " ..
+            (visual_gems_mode and "`2ON" or "`4OFF"))
+
+        return true
     end
 
+    if name == "show_gems_collected" then
+        local enabled = value == true
+            or value == 1
+            or value == "1"
+            or value == "true"
 
+        show_gems_collected = enabled
 
+        ontext("`9Show Gems Collected : " ..
+            (show_gems_collected and "`2ON" or "`4OFF"))
+
+        return true
+    end
 
 return false
 end
 
+-- Pasang kembali angka spin setelah masuk/pindah world.
+-- Cache tidak dihapus saat keluar world; nama akan diperbarui saat player list tersedia.
+runThread(function()
+    local lastWorld = ""
+    while true do
+        Sleep(1000)
+        local worldName = ""
+        if type(GetWorldName) == "function" then
+            local ok, result = pcall(GetWorldName)
+            if ok and type(result) == "string" then worldName = result end
+        elseif type(getWorld) == "function" then
+            local ok, result = pcall(getWorld)
+            if ok and type(result) == "table" then worldName = tostring(result.name or "") end
+        end
 
+        if worldName ~= "" and worldName ~= "EXIT" then
+            if type(getPlayerList) == "function" then
+                local ok, players = pcall(getPlayerList)
+                if ok and type(players) == "table" then
+                    for _, player in pairs(players) do
+                        local netid = tonumber(player.netid or player.netID)
+                        local rawPlayerName = tostring(player.name or "")
+                        local baseName = getCleanName(rawPlayerName)
+                        local saved = spinNumbersByName[normalizeSpinName(baseName)]
+                        if netid and saved and saved.number then
+                            local desiredName = (saved.baseName or baseName) .. " `7[" .. (saved.color or "`b") .. saved.number .. "`7]"
+                            local hasSavedNumber = rawPlayerName:match("%[.*" .. tostring(saved.number) .. "`7%]%s*$") ~= nil
+                            if not hasSavedNumber then
+                                pcall(function()
+                                    SendVariant({
+                                        v1 = "OnNameChanged",
+                                        v2 = desiredName,
+                                        netID = netid
+                                    }, netid)
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        lastWorld = worldName
+    end
+end)
 
--- Hook registration: use the event names documented by Growlauncher.
--- applyHook() is called after registering hooks when available.
 local hookApi = addHook or AddHook
 if type(hookApi) == "function" then
     hookApi(hook, "onSendPacket")
