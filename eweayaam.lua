@@ -66,6 +66,7 @@ fastdrop = pref:get("fastdrop", false)
 fasttake = pref:get("fasttake", false)
 noparticle = pref:get("noparticle", false)
 blink_color = pref:get("blink_color", false)
+world_collect_drop_logs_enabled = pref:get("world_collect_drop_logs_enabled", true) == true
 
 -- Keep relog state between hook callbacks; do not reset it on every packet.
 local relogWorld = nil
@@ -440,11 +441,49 @@ bjmeno = [[
 }
 ]]
 
+logsmeno = [[
+{
+    "sub_name": "LOG CENTER",
+    "icon": "RemoveRedEye",
+    "description": "LOG WORLD CENTER",
+    "menu": [
+        {
+            "type": "labelapp",
+            "icon": "Tune",
+            "text": "Log World",
+            "description": "Configure world log recording"
+        },
+        {
+            "text": "Enable Collect/Drop Logs",
+            "description": "Turn world lock logging on or off",
+            "type": "toggle",
+            "default": ]] .. tostring(world_collect_drop_logs_enabled) .. [[,
+            "alias": "world_collect_drop_logs_toggle",
+            "autosave": true
+        },
+        {
+            "text": "Open Collect/Drop Logs",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "collect/droppedlock"
+        },
+        {
+            "text": "Spin Logs",
+            "type": "button",
+            "icon": "Bolt",
+            "alias": "spinlogss"
+        }
+        
+    ]
+}
+]]
+
 require("IniEy")
 addCategory("KOU PROJECT", "settings")
 addIntoModule(modmeno, "KOU PROJECT")
 addIntoModule(csnmeno, "KOU PROJECT")
 addIntoModule(bjmeno, "KOU PROJECT")
+addIntoModule(logsmeno, "KOU PROJECT")
 sendNotification("KOU PROXY")
 
 world_logs = {}
@@ -460,18 +499,193 @@ function add_log(table_ref, msg)
 end
 
 function show_logs_menu()
-    local logs_menu = [[set_default_color|`o
-add_label_with_icon|big|`bCCTV Logs System|left|32|
+    local logs_menu = [[
+set_bg_color|10, 10, 10, 180|
+set_border_color|180, 180, 180, 180|
+add_label_with_icon|big|`wCCTV `9Logs `bSystem|left|32|
+add_smalltext|`7DATABASE MONITORING SYSTEM|
 add_spacer|small|
-add_textbox|`oSelect the database module you wish to inspect.|left|
+add_textbox|`oSelect a database module to inspect.|left|
 add_spacer|small|
-add_button|btn_world_logs|`wWorld Collect/Drop Logs|
-add_button|btn_spin_logs|`wRoulette Spin Logs|
+add_label|small|`9━━━ `wLOG MODULES `9━━━|left|
+add_button|btn_world_logs|`wWorld `2Collect/`4Drop `wLogs|
+add_button|btn_spin_logs|`wRoulette `9Spin `wLogs|
 add_spacer|small|
+add_textbox|`7System Status: `2ONLINE|left|
 add_quick_exit||
 end_dialog|logs_menu_main|||
 ]]
     dialog(logs_menu)
+end
+
+
+-- =========================================================
+-- WORLD COLLECT / DROP LOGS (simplified)
+local wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil
+local world_logs_search = ""
+local lock_ids = {242, 1796, 7188}
+
+local function wcd_world_name()
+    local world
+    if type(getWorld) == "function" then
+        local ok, value = pcall(getWorld)
+        if ok then world = value end
+    elseif type(getworld) == "function" then
+        local ok, value = pcall(getworld)
+        if ok then world = value end
+    end
+    local name = (type(world) == "table" and world.name) or nil
+    if (not name or name == "") and type(GetWorldName) == "function" then
+        local ok, value = pcall(GetWorldName)
+        if ok then name = value end
+    end
+    if type(name) ~= "string" or name == "" or name:upper() == "EXIT" then return nil end
+    return name
+end
+
+local function wcd_get_inventory()
+    local result = {}
+    for _, id in ipairs(lock_ids) do result[id] = type(inv) == "function" and (tonumber(inv(id)) or 0) or 0 end
+    return result
+end
+
+local function wcd_item_name(id)
+    return id == 242 and "WL" or id == 1796 and "DL" or id == 7188 and "BGL" or "LOCK"
+end
+
+local function wcd_player_name(player)
+    return tostring(player and (player.name or player.name4 or player.displayName or player.name3) or "Unknown")
+        :gsub("|", "/"):gsub("\n", " "):match("^%s*(.-)%s*$") or "Unknown"
+end
+
+local function wcd_my_name()
+    local player
+    if type(GetLocal) == "function" then
+        local ok, value = pcall(GetLocal)
+        if ok then player = value end
+    end
+    return wcd_player_name(player or {name = nick})
+end
+
+local function wcd_nearest_player(x, y, max_distance)
+    local best, best_distance = "Unknown", (max_distance or 160)
+    local players = {}
+    if type(GetLocal) == "function" then
+        local ok, p = pcall(GetLocal)
+        if ok and p then players[#players + 1] = p end
+    end
+    local getter = GetPlayerList or GetPlayers or getPlayerList
+    if type(getter) == "function" then
+        local ok, list = pcall(getter)
+        if ok and type(list) == "table" then
+            for _, p in pairs(list) do players[#players + 1] = p end
+        end
+    end
+    for _, p in ipairs(players) do
+        if type(p) == "table" then
+            local pos = type(p.pos) == "table" and p.pos or {}
+            local px = tonumber(p.posX or p.pos_x or pos.x or p.x) or 0
+            local py = tonumber(p.posY or p.pos_y or pos.y or p.y) or 0
+            if math.abs(x) > 1000 and math.abs(px) < 1000 then px = px * 32 end
+            if math.abs(y) > 1000 and math.abs(py) < 1000 then py = py * 32 end
+            local distance = math.sqrt((px - x)^2 + (py - y)^2)
+            if distance < best_distance then best, best_distance = wcd_player_name(p), distance end
+        end
+    end
+    return best
+end
+
+local function wcd_add_log(action, player, amount, id, world)
+    local color = id == 242 and "`9" or id == 1796 and "`1" or id == 7188 and "`e" or "`w"
+    local arrow = action == "COLLECT" and "`w<<" or "`w>>"
+    local action_color = action == "COLLECT" and "`2" or "`4"
+    local msg = "`w[ `4" .. os.date("%H:%M:%S") .. " `w] `w[ " .. action_color .. action .. " `w] " ..
+        tostring(player or "Unknown") .. " in `2" .. tostring(world) .. " `b" .. arrow .. " " ..
+        color .. tostring(amount) .. " `w" .. wcd_item_name(id)
+    add_log(world_logs, msg)
+end
+
+local function wcd_scan_world()
+    -- JSON UI toggle: when disabled, do not scan or record world changes.
+    -- Clear snapshots so re-enabling starts with a clean baseline.
+    if world_collect_drop_logs_enabled ~= true then
+        wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil
+        return
+    end
+    if type(checkworld) ~= "function" or not checkworld() then
+        wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil
+        return
+    end
+    local world = wcd_world_name()
+    if not world then wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil; return end
+    if world ~= wcd_world then
+        wcd_world, wcd_snapshot, wcd_inventory_snapshot = world, nil, nil
+    end
+
+    local inv_now = wcd_get_inventory()
+    local delta = {}
+    for _, id in ipairs(lock_ids) do delta[id] = inv_now[id] - ((wcd_inventory_snapshot and wcd_inventory_snapshot[id]) or inv_now[id]) end
+    local getter = getObjectList or GetObjectList
+    if type(getter) ~= "function" then return end
+    local ok, objects = pcall(getter)
+    if not ok or type(objects) ~= "table" or next(objects) == nil then return end
+
+    local current = {}
+    for _, obj in pairs(objects) do
+        if type(obj) == "table" then
+            local id = tonumber(obj.itemid or obj.itemID or obj.id_item) or -1
+            if id == 242 or id == 1796 or id == 7188 then
+                local pos = type(obj.pos) == "table" and obj.pos or {}
+                local x = tonumber(obj.posX or obj.pos_x or pos.x or obj.x) or 0
+                local y = tonumber(obj.posY or obj.pos_y or pos.y or obj.y) or 0
+                local amount = math.max(1, tonumber(obj.amount or obj.count) or 1)
+                local object_id = obj.id or obj.uid or obj.object_id
+                local key = object_id ~= nil and ("id:" .. tostring(object_id)) or (id .. ":" .. x .. ":" .. y)
+                current[key] = {id = id, amount = amount, x = x, y = y}
+            end
+        end
+    end
+
+    if wcd_snapshot then
+        for key, obj in pairs(current) do
+            local old = wcd_snapshot[key]
+            local change = old and obj.id == old.id and obj.amount > old.amount and (obj.amount - old.amount) or (not old and obj.amount or 0)
+            if change > 0 then
+                local who = delta[obj.id] < 0 and wcd_my_name() or wcd_nearest_player(obj.x, obj.y, 160)
+                wcd_add_log("DROPPED", who, change, obj.id, world)
+            end
+        end
+        for key, old in pairs(wcd_snapshot) do
+            local obj = current[key]
+            local change = not obj and old.amount or (obj and obj.id == old.id and obj.amount < old.amount and (old.amount - obj.amount) or 0)
+            if change > 0 then
+                local who = delta[old.id] > 0 and wcd_my_name() or wcd_nearest_player(old.x, old.y, 96)
+                wcd_add_log("COLLECT", who, change, old.id, world)
+            end
+        end
+    end
+    wcd_snapshot, wcd_inventory_snapshot = current, inv_now
+end
+
+local function show_world_logs(query)
+    if query ~= nil then world_logs_search = tostring(query) end
+    local search = world_logs_search:lower()
+    local d = "set_default_color|`o\nset_bg_color|10, 10, 10, 180\nset_border_color|180, 180, 180, 180\nadd_label_with_icon|big|`bWorld Collect/Drop Logs|left|3826|\n"
+    d = d .. "add_text_input|world_player_search|Search player name:|" .. world_logs_search .. "|30|\n"
+    d = d .. "add_button|btn_search_world_player|`2Search Player|\nadd_spacer|small|\n"
+    local found = false
+    for _, entry in ipairs(world_logs) do
+        local plain = tostring(entry):gsub("`.", "")
+        local player = plain:match("%[DROPPED%]%s*(.-)%s+in%s+") or plain:match("%[COLLECT%]%s*(.-)%s+in%s+") or ""
+        if search == "" or player:lower():find(search, 1, true) then
+            d = d .. "add_textbox|" .. entry .. "|left|\n"
+            found = true
+        end
+    end
+    if not found then d = d .. "add_textbox|`7No matching world logs.|left|\n" end
+    d = d .. "add_spacer|small|\nadd_button|btn_clear_world_logs|`4Clear Logs|\n"
+    d = d .. "add_button|btn_world_logs_back|`wBack to Menu|\nend_dialog|logs_view|Close||\n"
+    dialog(d)
 end
 
 spin_mode = "FAST WHEEL"
@@ -550,6 +764,38 @@ data ={}
 taxset = "5"
 saved_tax = 0
 local savedWeather = tonumber(pref:get("saved_weather", nil))
+if savedWeather == 0 then savedWeather = nil end -- ID 0 disimpan sebagai status default/non-override.
+
+-- Terapapkan visual weather tersimpan langsung tanpa Sleep/delay.
+-- Dipanggil saat world spawn/masuk kembali; jika API tidak tersedia, tidak membuat script error.
+local function applySavedVisualWeather()
+    if not savedWeather or not growtopia or type(growtopia.setWeather) ~= "function" then
+        return false
+    end
+    local ok = pcall(function()
+        growtopia.setWeather(savedWeather)
+    end)
+    return ok
+end
+
+-- Kembalikan visual weather ke default dan hapus pilihan yang disimpan.
+local function removeVisualWeather()
+    savedWeather = nil
+    pcall(function()
+        -- Simpan 0 sebagai penanda tidak ada override; loader mengubahnya kembali menjadi nil.
+        pref:set("saved_weather", 0)
+        pref:save()
+    end)
+
+    if growtopia and type(growtopia.setWeather) == "function" then
+        -- ID 0 dipakai untuk mengembalikan visual weather ke default.
+        local ok = pcall(function() growtopia.setWeather(0) end)
+        if not ok then
+            pcall(function() growtopia.setWeather(nil) end)
+        end
+    end
+    return true
+end
 auto_accept_mode = false
 auto_accept_hide_ticks = 0
 punchgems = false
@@ -2131,60 +2377,7 @@ local function calculate(expression)
     return nil
 end
 
-function wrenchAll(mode)
-    if type(GetPlayerList) ~= "function" then
-        log("`4GetPlayerList unavailable")
-        ontext("`4GetPlayerList unavailable")
-        return false
-    end
 
-    local list = GetPlayerList()
-
-    if type(list) ~= "table" then
-        ontext("`4Player list tidak tersedia.")
-        return false
-    end
-
-    local me = GetLocal()
-    local myNetID = me and (me.netID or me.netid) or 0
-
-    local modeValue = {
-        pull = 1,
-        kick = 2,
-        ban = 3
-    }
-
-    local value = modeValue[mode]
-
-    if not value then
-        ontext("`4Mode tidak valid!")
-        return false
-    end
-
-    -- Aktifkan Fast Wrench dan pilih mode
-    editToggle("Fast Wrench", true)
-    editToggle("Value", value)
-
-    local count = 0
-
-    for _, plr in pairs(list) do
-        local netID = plr and (plr.netID or plr.netid)
-
-        if netID and tonumber(netID) ~= tonumber(myNetID) then
-            SendPacket(2, "action|wrench\n|netid|" .. netID)
-            count = count + 1
-            Sleep(40)
-        end
-    end
-
-    local result = "`2" .. mode .. " all: `9" .. count
-
-    log(result)
-    ontext(result)
-    ontalk(result)
-
-    return true
-end
 
 local startupPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
 local startupName = (type(startupPlayer) == "table" and startupPlayer.name) or "Player"
@@ -2192,6 +2385,7 @@ log("`9Hello, " .. tostring(startupName) .. " Welcome Back")
 Sleep(500)
 log("`bKamu Bermain Di `0Hari`9 "..hari.." `0Tanggal`c "..tanggal.." `0Bulan`c "..bulan.." `0 Tahun`9 "..tahun.."")
 log("`#Ketik /proxy untuk melihat command.")
+dialog(gazette)
 
 function hook(packetType, str, packet)
 
@@ -2218,53 +2412,68 @@ if str:find("action|dialog_return", 1, true)
 end
 
 if cmd("/proxy") or input == "cmd" then
-local currentPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
-local currentName = (type(currentPlayer) == "table" and currentPlayer.name) or "Player"
-gazette = [[add_label_with_icon|big|`9PROXY Commands    ````       |left|32|
+    local currentPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
+    local currentName = (type(currentPlayer) == "table" and currentPlayer.name) or "Player"
+
+gazette = [[
+set_default_color|`o
+set_bg_color|10, 10, 10, 180|
+set_border_color|180, 180, 180, 180|
+add_quick_exit|
+add_label_with_icon|big|`wPROXY COMMAND CENTER|left|32|
 add_spacer|small|
-add_smalltext|`9Welcome, to the `5#1 Best OPEN SOURCE Proxy `9script.|left|
-add_smalltext|`9What will you do today?, ]]..tostring(currentName)..[[|left|
+add_image_button|btn_kou|/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/kougazzete.rttex|0|0||
+add_textbox|`wWelcome back, ]] .. tostring(currentName) .. [[!|left|
+add_textbox|`wSelect a command from the list below.|left|
 add_spacer|small|
-add_label_with_icon|small|`5Information:|left|3524|
+add_label_with_icon|small|`wGENERAL|left|3524|
+add_textbox|`w/proxy - Show command menu|left|
 add_spacer|small|
-add_textbox|`9/proxy `2- Show proxy command|left|
+add_label_with_icon|small|`wLOCK COMMANDS|left|242|
+add_textbox|`w/daw - Drop all locks|left|
+add_textbox|`w/cd [AMOUNT] - Custom drop lock|left|
+add_textbox|`w/dw [AMOUNT] - Drop WL|left|
+add_textbox|`w/dd [AMOUNT] - Drop DL|left|
+add_textbox|`w/db [AMOUNT] - Drop BGL|left|
+add_textbox|`w/bal - Show WL balance|left|
+add_textbox|`w/cv - Fast BGL conversion|left|
 add_spacer|small|
-add_label_with_icon|small|`5Lock Command:|left|1422|
+add_label_with_icon|small|`wWORLD CONTROL|left|242|
+add_textbox|`w/rejoin - Rejoin world|left|
+add_textbox|`w/relog - Relog character|left|
+add_textbox|`w/res - Fast respawn|left|
+add_textbox|`w/tp [X] [Y] - Teleport to coordinates|left|
+add_textbox|`w/checktile - Check tile|left|
+add_textbox|`w/weather [ID] - Change visual weather|left|
+add_textbox|`w/tb - Take block at tile|left|
 add_spacer|small|
-add_textbox|`9/daw `2- Drop All Locks|left|
-add_textbox|`9/cd `1[AMOUNT] `2- Custom Drop Lock|left|
-add_textbox|`9/dw `1[AMOUNT] `2- Drop WL only|left|
-add_textbox|`9/dd `1[AMOUNT] `2- Drop DL only|left|
-add_textbox|`9/db `1[AMOUNT] `2- Drop BGL only|left|
-add_textbox|`9/bal `2- Show WL Balance|left|
-add_textbox|`9/cv `2- Fast convert bgl|left|
+add_label_with_icon|small|`wCSN HELPER|left|758|
+add_textbox|`w/setup - Show BJ setup|left|
+add_textbox|`w/bet [AMOUNT] - Set manual bet|left|
+add_textbox|`w/dt - Drop tax|left|
+add_textbox|`w/w1 - 4 [AMOUNT] - Drop lock to position|left|
+add_textbox|`w/pos1 - 4 - Save position|left|
+add_textbox|`w/remove1 - 4 - Remove saved position|left|
+add_textbox|`w/split [AMOUNT] - Split amount|left|
+add_textbox|`w/gd - Drop payout|left|
+add_textbox|`w/zzz - Show collected gems|left|
 add_spacer|small|
-add_label_with_icon|small|`5World Command:|left|242|
+add_label_with_icon|small|`wADVANCED TOOLS|left|7188|
+add_textbox|`w/arroz [AMOUNT] - Drop Arroz|left|
+add_textbox|`w/arroz1 - 4 [AMOUNT] - Drop Arroz at position|left|
+add_textbox|`w/logs - Show world logs|left|
+add_textbox|`w/crime - Auto crime|left|
+add_textbox|`w/acc - Fast ACC|left|
+add_textbox|`w/pullall - Pull all players|left|
+add_textbox|`w/kickall - Kick all players|left|
+add_textbox|`w/banall - Ban all players|left|
+add_textbox|`w/blink - Set blink skin|left|
+add_textbox|`w/calc - Calculator|left|
+add_textbox|`w/ame - Auto /me|left|
+add_textbox|`w/drop [ID] [AMOUNT] - Drop item by ID|left|
 add_spacer|small|
-add_textbox|`9/relog `2- Rejoin world|left|
-add_textbox|`9/res `2- Fast respawn|left|
-add_textbox|`9/tp [X] [Y] `2- Teleport on path|left|
-add_textbox|`9/checktile `2- Fast respawn|left|
-add_spacer|small|
-add_label_with_icon|small|`5CSN Helper Command:|left|758|
-add_spacer|small|
-add_textbox|`9/setup `2- Show setup for BJ|left|
-add_textbox|`9/bet [ AMOUNT ] `2- Set Manual Bet|left|
-add_textbox|`9/tp `2- Take lock in pos|left|
-add_textbox|`9/dt `2- Drop Tax|left|
-add_textbox|`9/w1 `1[AMOUNT] `2- Drop lock to POS1|left|
-add_textbox|`9/w2 `1[AMOUNT] `2- Drop lock to POS2|left|
-add_textbox|`9/split `1[AMOUNT] `2- Split|left|
-add_textbox|`9/gd `2- Drop payout to current posssition|left|
-add_textbox|`9/zzz `2- Show gems collected|left|
-add_spacer|small|
-add_label_with_icon|small|`5More Command:|left|2376|
-add_spacer|small|
-add_textbox|`9/arroz [ AMOUNT ] `2- Drop Arroz (`1only show u`2)|left|
-add_textbox|`9/relog `2- Fast Relog game|left|
-add_spacer|small|
-add_quick_exit||
-end_dialog|gazz|Cancel|Okay|
+add_textbox|`wPROXY SYSTEM - COMMAND MENU - V1.0|left|
+end_dialog|gazz|Close|Let's Go!|
 ]]
 dialog(gazette)
 return true
@@ -2336,34 +2545,32 @@ return true
 end
 
 if str:find("action|friends\ndelay") or str:find("buttonClicked|bk0") or str == ("action|dialog_return\ndialog_name|socialportal\n") then
-mmenu = [[
+    mmenu = [[
 set_default_color|`o
-set_bg_color|2, 0, 1, 100|
-set_border_color|255, 255, 255, 200|
+set_bg_color|10, 10, 10, 180|
+set_border_color|180, 180, 180, 180|
 add_quick_exit|
-
-add_label_with_icon|big|`wKillYourIdoll `9Proxy Menu|left|758|
+add_label_with_icon|big|`wKillYourIdoll Proxy Menu|left|758|
 add_spacer|small|
-
-add_textbox|`9General Tools|left|
+add_textbox|`wGeneral Tools|left|
 text_scaling_string|SubsToIptxtxD|
 add_button_with_icon|fcbgl|`wFast Change BGL|staticPurpleFrame|7188|
-add_button_with_icon|setupbtkk|`6BTK Setup|staticPurpleFrame|340|
+add_button_with_icon|setupbtkk|`wBTK Setup|staticPurpleFrame|340|
 add_button_with_icon|weatherr|`wWeather|staticPurpleFrame|934|
-add_button_with_icon|scan_floating|`3Scan Floating|staticPurpleFrame|6016|
-add_button_with_icon|auto_crime|`4Auto Crime|staticPurpleFrame|2380|
-add_button_with_icon|friends|`eSocial|staticPurpleFrame|9474|
+add_button_with_icon|scan_floating|`wScan Floating|staticPurpleFrame|6016|
+add_button_with_icon|auto_crime|`wAuto Crime|staticPurpleFrame|2380|
+add_button_with_icon|friends|`wSocial|staticPurpleFrame|9474|
 add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
-add_textbox|`9Gems Tools|left|
+add_textbox|`wGems Tools|left|
 text_scaling_string|SubsToIptxtxD|
-add_button_with_icon|open_logs|`9Logs|staticPurpleFrame|10668|
+add_button_with_icon|open_logs|`wLogs|staticPurpleFrame|1752|
 add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
 end_dialog|k||Back|
 ]]
-dialog(mmenu)
-return true
+    dialog(mmenu)
+    return true
 end
 
     if cmd("/logs") or str:find("buttonClicked|open_logs") then
@@ -2373,10 +2580,12 @@ end
 
 local spin_search = ""
 
-local function show_spin_logs(query)
+function show_spin_logs(query)
     spin_search = query or ""
 
     local d = "set_default_color|`o\n"
+    d = d .. "set_bg_color|10, 10, 10, 180\n"
+    d = d .. "set_border_color|180, 180, 180, 180\n"
     d = d .. "add_label_with_icon|big|`bRoulette Logs|left|32|\n"
     d = d .. "add_text_input|spin_search|Search Logs:|" .. spin_search .. "|30|\n"
     d = d .. "add_button|btn_search_spin|Search|\n"
@@ -2403,37 +2612,23 @@ local function show_spin_logs(query)
 
     d = d .. "add_spacer|small|\n"
     d = d .. "add_button|back_to_logs|`wBack to Menu|\n"
-    d = d .. "end_dialog|logs_view|Close||\n"
+    d = d .. "end_dialog|spin_logs_view|Close||\n"
 
     dialog(d)
 end
 
-if str:find("dialog_name|logs_menu_main", 1, true) then
-
-    if str:find("buttonClicked|btn_world_logs", 1, true) then
-        local d = "set_default_color|`o\n"
-        d = d .. "add_label_with_icon|big|`bWorld Logs|left|3826|\n"
-        d = d .. "add_spacer|small|\n"
-
-        for _, v in ipairs(world_logs) do
-            d = d .. "add_textbox|" .. tostring(v) .. "|left|\n"
-        end
-
-        d = d .. "add_spacer|small|\n"
-        d = d .. "add_button|back_to_logs|`wBack to Menu|\n"
-        d = d .. "end_dialog|logs_view|Close||\n"
-
-        dialog(d)
-        return true
-
-    elseif str:find("buttonClicked|btn_spin_logs", 1, true) then
-        show_spin_logs("")
-        return true
-    end
+-- Handle log-menu buttons even if Growlauncher formats dialog_return
+-- without the expected dialog_name field/order.
+if str:find("buttonClicked|btn_world_logs", 1, true) then
+    show_world_logs()
+    return true
+elseif str:find("buttonClicked|btn_spin_logs", 1, true) then
+    show_spin_logs("")
+    return true
 end
 
 if str:find("action|dialog_return", 1, true)
-    and str:find("dialog_name|logs_view", 1, true) then
+    and (str:find("dialog_name|logs_view", 1, true) or str:find("dialog_name|spin_logs_view", 1, true)) then
 
     local button = str:match("buttonClicked|([^\r\n]*)")
 
@@ -2442,8 +2637,24 @@ if str:find("action|dialog_return", 1, true)
         show_spin_logs(query)
         return true
 
+    elseif button == "btn_search_world_player" then
+        local query = str:match("\nworld_player_search|([^\r\n]*)") or ""
+        world_logs_search = query
+        show_world_logs(query)
+        return true
+
+    elseif button == "btn_clear_world_logs" then
+        world_logs = {}
+        show_world_logs("")
+        return true
+
+    elseif button == "btn_world_logs_back" then
+        world_logs_search = ""
+        show_logs_menu()
+        return true
+
     elseif button == "back_to_logs" then
-        show_spin_logs("")
+        show_logs_menu()
         return true
     end
 end
@@ -2523,7 +2734,7 @@ if weatherChoice then
         savedWeather = weatherChoice
         pref:set("saved_weather", savedWeather)
         pref:save()
-        growtopia.setWeather(savedWeather)
+        applySavedVisualWeather()
         return true
     end
 end
@@ -2680,11 +2891,6 @@ if cmd("/checktile") then
 checktile = not checktile
 ontext("`2Checktile: " .. (checktile and "`2ON" or "`4OFF"))
 log("`2Checktile: " .. (checktile and "`2ON" or "`4OFF"))
-return true
-end
-
-if cmd("/tg") or str:find("buttonClicked|ck") then
-takegems()
 return true
 end
 
@@ -2924,22 +3130,98 @@ end
 
     if cmd("/acc") then
         auto_accept_mode = not auto_accept_mode
-        ontalk("`2Auto Accept Access Mode: " .. (auto_accept_mode and "`2ON" or "`4OFF"))
+        ontext("`2Auto Accept Access Mode: " .. (auto_accept_mode and "`2ON" or "`4OFF"))
         return true
     end
     
+pull = false
+kick = false
+ban = false
+if cmd("/wr 0") then
+pull = false
+kick = false
+ban = false
+ont("`9Wrench Mode : Normal")
+log("`9Wrench Mode : Normal")
+return true
+end
+if cmd("/wr 1") then
+pull = true
+kick = false
+ban = false
+ontext("`9Wrench Mode : `cPull ")
+log("`9Wrench Mode : `cPull ")
+return true 
+end
+if cmd("/wr 2") then
+pull = false
+kick = true
+ban = false
+ontext("`9Wrench Mode : `cKick ")
+log("`9Wrench Mode : `cKick ")
+return true 
+end
+if cmd("/wr 3") then
+pull = false
+kick = false
+ban = true
+ontext("`9Wrench Mode : `4Ban ")
+log("`9Wrench Mode : `4Ban ")
+return true 
+end
+
+if pull then
+    if str:find("action|wrench\n|netid|(%d+)") then
+        id = str:match("|netid|(%d+)")
+        netid0 = tonumber(id)
+        for _, plr in pairs(GetPlayerList()) do
+            if tonumber(plr.netID) == netid0 then
+                SendPacket(2, "action|dialog_return\ndialog_name|popup\nnetID|"..netid0.."|\nbuttonClicked|pull")
+                ontext("`9Pull "..plr.name)
+                return true
+            end
+        end
+    end
+end
+
+if kick then
+    if str:find("action|wrench\n|netid|(%d+)") then
+        id = str:match("|netid|(%d+)")
+        netid0 = tonumber(id)
+        for _, plr in pairs(GetPlayerList()) do
+            if tonumber(plr.netID) == netid0 then
+                ontext("`sKicking "..plr.name)
+                return true
+            end
+        end
+    end
+end
+
+if ban then
+    if str:find("action|wrench\n|netid|(%d+)") then
+        id = str:match("|netid|(%d+)")
+        netid0 = tonumber(id)
+        for _, plr in pairs(GetPlayerList()) do
+            if tonumber(plr.netID) == netid0 then
+                ontext("`4Banning "..plr.name)
+                return true
+            end
+        end
+    end
+end
+    
     if cmd("/pullall") then
-    wrenchAll("pull")
+    playerAction("pull")
     return true
 end
 
 if cmd("/kickall") then
-    wrenchAll("kick")
+    playerAction("kick")
     return true
 end
 
 if cmd("/banall") then
-    wrenchAll("ban")
+    playerAction("ban")
     return true
 end
 
@@ -3004,13 +3286,20 @@ ontext("Pos player 4 Removed")
 return true
 end
 
+-- /removeweather, /weather remove, atau /weather reset menghapus visual override.
+if cmd("/removeweather") or cmd("/weather remove") or cmd("/weather reset") then
+    removeVisualWeather()
+    log("`2Visual weather dikembalikan ke default.")
+    return true
+end
+
 if string.match(input, "^/weather (%d+)$") then
     local id = tonumber(string.match(input, "^/weather (%d+)$"))
     if id and id >= 1 and id <= 40 then
         savedWeather = id
         pref:set("saved_weather", savedWeather)
         pref:save()
-        growtopia.setWeather(savedWeather)
+        applySavedVisualWeather()
         log("Weather changed to ID: " .. id)
     else
         log("`4Weather ID harus antara 1 sampai 40.")
@@ -3090,11 +3379,20 @@ end
     if cmd("/w4") then execute_payout(4); return true end
     if cmd("/gd") then execute_payout(5); return true end
 
-    if cmd("/autome") then
+    if cmd("/ame") then
         auto_me_mode = not auto_me_mode
         ontext("`2Auto /me Mode: " .. (auto_me_mode and "`2ON" or "`4OFF"))
         return true
     end
+    
+    if auto_me_mode and type(str) == "string" then
+    local chat_msg = str:match("action|input\n|text|([^\n]*)")
+
+    if chat_msg and chat_msg ~= "" and chat_msg:sub(1, 1) ~= "/" then
+        SendPacket(2, "action|input\n|text|/me " .. chat_msg)
+        return true
+    end
+end
 
 if string.match(input, "/drop (%d+) (%d+)") then
 local id = string.match(input, "/drop (%d+)")
@@ -3212,6 +3510,8 @@ function var(var)
     end
     if var.v1 == "OnSpawn" then
         startSpinRestore()
+        -- Terapkan langsung saat spawn supaya visual weather tetap sama setelah re-enter.
+        applySavedVisualWeather()
     end
 
     -- OnSpawn tidak selalu cukup untuk mendeteksi re-enter/ganti world.
@@ -3221,6 +3521,8 @@ function var(var)
             or consoleText:find("joined", 1, true)
             or consoleText:find("entered", 1, true) then
             startSpinRestore()
+            -- Tidak memakai Sleep; mencoba menerapkan weather langsung pada event masuk world.
+            applySavedVisualWeather()
         end
     end
 
@@ -3373,6 +3675,10 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
         local clean_text = text_to_check:gsub("`.", "")
         local num = tonumber(clean_text:match("got.-(%d+)"))
         local number_color = spinNumberColor or text_to_check:match("got.-(`.)%d+") or "`w"
+        local spin_log_name = text_to_check:match("^(.-)%s+spun the wheel and got")
+            or clean_text:match("^(.-)%s+spun the wheel and got")
+            or "Unknown Player"
+        local spin_log_result = number_color .. tostring(num or "")
 
         if not num then
             spintext = nil
@@ -3424,7 +3730,8 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
 
             add_log(
                 spin_logs,
-                "`8[" .. timestamp .. "] `p◆ `w" .. clean_text .. " `8» `w"
+                "`w[ `4" .. timestamp .. " `w] " .. spin_log_name
+                    .. " `wspun the wheel and got `w" .. spin_log_result
             )
 
             spintext = nil
@@ -3468,7 +3775,8 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
 
             add_log(
                 spin_logs,
-                "`8[" .. timestamp .. "] `p◆ `w" .. clean_text .. " `8» `w"
+                "`w[ `4" .. timestamp .. " `w] " .. spin_log_name
+                    .. " `wspun the wheel and got `w" .. spin_log_result
             )
 
             spintext = nil
@@ -3555,7 +3863,8 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
 
         add_log(
             spin_logs,
-            "`8[" .. timestamp .. "] `w" .. clean_text .. " `b» `w" .. logic
+            "`w[ `4" .. timestamp .. " `w] " .. spin_log_name
+                .. " `wspun the wheel and got `w" .. spin_log_result .. logic
         )
 
         spintext = nil
@@ -3878,7 +4187,7 @@ end
         if auto_accept_hide_ticks > 0 then auto_accept_hide_ticks = auto_accept_hide_ticks - 1 end
 
 if a.type == 11 and checkworld() then
-    local objects = kouGetObjectListSafe()
+    local objects = GetObjectListSafe()
     if type(objects) == "table" then
         for _, obj in pairs(objects) do
             if type(obj) == "table" and obj.id == a.value then
@@ -4506,8 +4815,45 @@ if name == "scan_gems" then
 
         return true
     end
+    
+    if name == "world_collect_drop_logs_toggle" then
+        local normalized = tostring(value):lower()
+        local enabled = value == true or value == 1 or value == "1"
+            or normalized == "true" or normalized == "on"
+        world_collect_drop_logs_enabled = enabled
+        pref:set("world_collect_drop_logs_enabled", enabled)
+        pref:save()
+        -- Reset baseline on both transitions to avoid false events after toggling.
+        wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil
+        ontext("`9Collect/Drop Logs: " .. (enabled and "`2ON" or "`4OFF"))
+        log("`9Collect/Drop Logs: " .. (enabled and "`2ON" or "`4OFF"))
+        return true
+    end
+
+    if tostring(name or ""):lower() == "spinlogss" then
+        show_spin_logs("")
+        return true
+    end
+    
+    if name == "collect/droppedlock" then
+        show_world_logs()
+        return true
+    end
+    
+
+    
 
 return false
+end
+
+-- Start the world collect/drop scanner only once; it uses existing Kou Project hooks.
+if type(runThread) == "function" and type(Sleep) == "function" then
+    runThread(function()
+        while true do
+            pcall(wcd_scan_world)
+            Sleep(350)
+        end
+    end)
 end
 
 local hookApi = addHook or AddHook
@@ -4525,4 +4871,3 @@ if type(hookApi) == "function" then
 else
     log("`4[Kou Project] Hook API addHook tidak tersedia.")
 end
-
