@@ -2385,37 +2385,12 @@ log("`9Hello, " .. tostring(startupName) .. " Welcome Back")
 Sleep(500)
 log("`bKamu Bermain Di `0Hari`9 "..hari.." `0Tanggal`c "..tanggal.." `0Bulan`c "..bulan.." `0 Tahun`9 "..tahun.."")
 log("`#Ketik /proxy untuk melihat command.")
-dialog(gazette)
 
-function hook(packetType, str, packet)
 
-str = tostring(str or "")
-
-local input = str:lower():gsub("^.*|", ""):gsub("^%s+", ""):gsub("%s+$", "")
-
-local function cmd(command)
-    local expected = command:lower()
-    if input == expected then
-        return true
-    end
-    return input:sub(1, #expected + 1) == expected .. " "
-end
-
-if cmd("/option") then
-    openChecklist()
-    return true
-end
-
-if str:find("action|dialog_return", 1, true)
-    and str:find("dialog_name|checklist_dialog", 1, true) then
-    return processChecklistReturn(str)
-end
-
-if cmd("/proxy") or input == "cmd" then
+function openGazette()
     local currentPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
     local currentName = (type(currentPlayer) == "table" and currentPlayer.name) or "Player"
-
-gazette = [[
+    gazette = [[
 set_default_color|`o
 set_bg_color|10, 10, 10, 180|
 set_border_color|180, 180, 180, 180|
@@ -2475,8 +2450,36 @@ add_spacer|small|
 add_textbox|`wPROXY SYSTEM - COMMAND MENU - V1.0|left|
 end_dialog|gazz|Close|Let's Go!|
 ]]
-dialog(gazette)
-return true
+    dialog(gazette)
+end
+
+function hook(packetType, str, packet)
+
+str = tostring(str or "")
+
+local input = str:lower():gsub("^.*|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+
+local function cmd(command)
+    local expected = command:lower()
+    if input == expected then
+        return true
+    end
+    return input:sub(1, #expected + 1) == expected .. " "
+end
+
+if cmd("/option") then
+    openChecklist()
+    return true
+end
+
+if str:find("action|dialog_return", 1, true)
+    and str:find("dialog_name|checklist_dialog", 1, true) then
+    return processChecklistReturn(str)
+end
+
+if cmd("/proxy") or input == "cmd" then
+    openGazette()
+    return true
 end
 
 function weather()
@@ -4870,4 +4873,20 @@ if type(hookApi) == "function" then
     end
 else
     log("`4[Kou Project] Hook API addHook tidak tersedia.")
+end
+
+-- Open the Gazette dialog automatically when this script starts.
+if type(runThread) == "function" and type(Sleep) == "function" then
+    runThread(function()
+        Sleep(1000)
+        local ok, err = pcall(openGazette)
+        if not ok then
+            log("`4[Kou Project] Gagal membuka Gazette: " .. tostring(err))
+        end
+    end)
+else
+    local ok, err = pcall(openGazette)
+    if not ok then
+        log("`4[Kou Project] Gagal membuka Gazette: " .. tostring(err))
+    end
 end
