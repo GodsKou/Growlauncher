@@ -1022,15 +1022,8 @@ local function isWorldReadyForActions()
 end
 
 function rdrop(id, amount)
-    if not isWorldReadyForActions() then return false end
 
     SendPacket(2, "action|drop\n|itemID|" .. tostring(id))
-    if AUTO_DROP_HANDSHAKE_MS > 0 then
-        Sleep(AUTO_DROP_HANDSHAKE_MS)
-    end
-
-    -- Cek ulang karena world bisa berubah selama jeda dialog.
-    if not isWorldReadyForActions() then return false end
     SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|" .. tostring(id) .. "|\ncount|" .. tostring(amount))
     return true
 end
@@ -1072,13 +1065,16 @@ local function startDropQueueWorker()
 end
 
 function autodrop(id, amount)
-    id = tonumber(id)
-    amount = math.floor(tonumber(amount) or 0)
-    if not id or amount <= 0 then return false end
-
-    dropQueue[#dropQueue + 1] = { id = id, amount = amount }
-    startDropQueueWorker()
-    return true
+    local left = amount
+    while left > 200 do
+        auto_drop_count = auto_drop_count + 1
+        rdrop(id, 200)
+        left = left - 200
+    end
+    if left > 0 then
+        auto_drop_count = auto_drop_count + 1
+        rdrop(id, left)
+    end
 end
 
 function pos(px,py)
