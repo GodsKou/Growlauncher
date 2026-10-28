@@ -932,6 +932,7 @@ function repeatgems()
     if gemsRepeatThreadRunning then return end
     gemsRepeatThreadRunning = true
     while gemsrepeat do
+        if not checkworld() then return nil end
         local ok, err = pcall(ScanGemsParticle)
         if not ok then
             log("`4[Gems Repeat] Error: " .. tostring(err))
@@ -997,71 +998,11 @@ function toggleAutoConvert()
     end
 end
 
-function dropItem(itemID, count)
-    -- Route one-off drops through the same paced queue as bulk drops.
-    if type(autodrop) == "function" then
-        return autodrop(itemID, count)
-    end
-    return false
-end
-
-function dropgtps(id, count)
-    SendPacket(2, "action|dialog_return\ndialog_name|drop\nitem_drop|" .. tostring(id) .. "|\nitem_count|" .. tostring(count))
-end
-
--- Bulk drops are serialized and paced to avoid sending dozens of packets at once.
-local dropQueue = {}
-local dropWorkerRunning = false
-
--- AutoDrop: jeda minimal untuk memberi waktu dialog drop diproses.
--- Jika konfirmasi gagal di server, naikkan menjadi 60-100 ms.
-local AUTO_DROP_HANDSHAKE_MS = 40
-
-local function isWorldReadyForActions()
-    return checkworld()
-end
-
 function rdrop(id, amount)
 
     SendPacket(2, "action|drop\n|itemID|" .. tostring(id))
     SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|" .. tostring(id) .. "|\ncount|" .. tostring(amount))
     return true
-end
-
-local function startDropQueueWorker()
-    if dropWorkerRunning then return end
-    dropWorkerRunning = true
-
-    runThread(function()
-        while #dropQueue > 0 do
-            local job = table.remove(dropQueue, 1)
-            local left = job.amount
-
-            while left > 0 do
-                -- Tunggu world valid tanpa mengirim paket saat transisi.
-                if not isWorldReadyForActions() then
-                    Sleep(300)
-                else
-                    local chunk = math.min(left, 200)
-                    local ok, sent = pcall(rdrop, job.id, chunk)
-                    if not ok then
-                        log("`4[AutoDrop] Error mengirim paket drop: " .. tostring(sent))
-                        break
-                    end
-                    if sent then
-                        auto_drop_count = (tonumber(auto_drop_count) or 0) + 1
-                        left = left - chunk
-                    else
-                        Sleep(300)
-                    end
-                end
-            end
-            -- Tidak ada Sleep tambahan antar-chunk atau antar-job.
-        end
-
-        dropWorkerRunning = false
-        if #dropQueue > 0 then startDropQueueWorker() end
-    end)
 end
 
 function autodrop(id, amount)
@@ -2448,6 +2389,8 @@ end_dialog|gazz|Close|Let's Go!|
 ]]
     dialog(gazette)
 end
+openGazette()
+
 
 function hook(packetType, str, packet)
 
@@ -2926,43 +2869,27 @@ if amount then
     return true
 end
 
-if string.match(input, "^/dd (%d+)$") then
-    local amount = tonumber(string.match(input, "^/dd (%d+)$"))
-    local cur_dl, cur_bgl = inv(1796), inv(7188)
-    local need_bgl = math.floor(amount / 100)
-    local need_dl = amount % 100
-    -- Hitung total nilai DL yang tersedia
-    local total_dl = (cur_bgl * 100) + cur_dl
-    -- Batalkan jika total DL/BGL tidak mencukupi
-    if total_dl < amount then
-ontext("`4Gagal Drop! `wJumlah tidak mencukupi. `wDiminta: `9" .. amount .. " DL `w| Tersedia: `9" .. total_dl .. " DL")
-        return true
-    end
-    local b_drop = need_bgl
-    local d_drop = need_dl
-    -- Jika DL kurang, konversi BGL menjadi DL
-    if cur_dl < d_drop then
-        local diff = d_drop - cur_dl
-        local convert_bgl = math.ceil(diff / 100)
-        if cur_bgl < b_drop + convert_bgl then
-            ontext("`4Gagal Drop! `wBGL tidak mencukupi.")
-            return true
-        end
-        b_drop = b_drop + convert_bgl
-        d_drop = d_drop - (convert_bgl * 100)
-        d_drop = d_drop + cur_dl
-    end
-    if b_drop > 0 then
-        autodrop(7188, b_drop)
-    end
-    if d_drop > 0 then
-        autodrop(1796, d_drop)
-    end
-local result = "`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL"
-    log(result)
-    ontext(result)
-    ontalk(result)
-    return true
+if string.match(input, "/dd (%d+)") then
+local amount = string.match(input, "/dd (%d+)")
+local cur_dl, cur_bgl = inv(1796), inv(7188)
+local b_drop = math.floor(amount / 100)
+local d_drop = amount % 100
+if cur_bgl < b_drop then
+local diff = b_drop - cur_bgl
+b_drop = cur_bgl
+d_drop = d_drop + (diff * 100)
+end
+local max_dl_100s = math.floor(cur_dl / 100)
+local replace_bgl = math.min(max_dl_100s, b_drop)
+b_drop = b_drop - replace_bgl
+d_drop = d_drop + (replace_bgl * 100)
+if cur_dl < d_drop then wear(7188) end
+if b_drop > 0 then autodrop(7188, b_drop) end
+if d_drop > 0 then autodrop(1796, d_drop) end
+ontext("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
+ontalk("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
+log("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
+return true
 end
 
 if string.match(input, "^/db (%d+)$") then
@@ -2975,54 +2902,33 @@ if string.match(input, "^/db (%d+)$") then
     return true
 end
 
-if string.match(input, "^/cd (%d+)$") then
-    local target = tonumber(string.match(input, "^/cd (%d+)$"))
-    local cur_bgl = inv(7188)
-    local cur_dl = inv(1796)
-    local cur_wl = inv(242)
-    -- Hitung total nilai dalam WL
-    local total_wl = (cur_bgl * 10000) + (cur_dl * 100) + cur_wl
-    -- Batalkan jika total tidak mencukupi
-    if total_wl < target then
-        ontext("`4Gagal Drop! `wJumlah tidak mencukupi. `wDiminta: `9" .. target .. " WL `w| Tersedia: `9" .. total_wl .. " WL")
-        return true
-    end
-    local b_drop = math.floor(target / 10000)
-    local rem = target % 10000
-    if cur_bgl < b_drop then
-        rem = rem + ((b_drop - cur_bgl) * 10000)
-        b_drop = cur_bgl
-    end
-    local d_drop = math.floor(rem / 100)
-    local w_drop = rem % 100
-    -- Pastikan jumlah item yang akan di-drop tersedia
-    if cur_wl < w_drop then
-        local missing_wl = w_drop - cur_wl
-        local convert_dl = math.ceil(missing_wl / 100)
-        if cur_dl >= d_drop + convert_dl then
-            wear(1796)
-        elseif cur_bgl > b_drop then
-            wear(7188)
-            wear(1796)
-        end
-    end
-    if cur_dl < d_drop and cur_bgl > b_drop then
-        wear(7188)
-    end
-    if b_drop > 0 then
-        autodrop(7188, b_drop)
-    end
-    if d_drop > 0 then
-        autodrop(1796, d_drop)
-    end
-    if w_drop > 0 then
-        autodrop(242, w_drop)
-    end
-local result = "`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `9" .. w_drop .. " WL"
+if string.match(input, "/cd (%d+)") then
+local target = string.match(input, "/cd (%d+)")
+local b_drop = math.floor(target / 10000)
+local rem = target % 10000
+if inv(7188) < b_drop then
+rem = rem + ((b_drop - inv(7188)) * 10000)
+b_drop = inv(7188)
+end
+local d_drop = math.floor(rem / 100)
+local w_drop = rem % 100
+if inv(242) < w_drop then
+if inv(1796) > d_drop then wear(1796)
+elseif inv(7188) > b_drop then wear(7188); wear(1796) end
+end
+if inv(1796) < d_drop and inv(7188) > b_drop then wear(7188) end
+if b_drop > 0 then autodrop(7188, b_drop) end
+if d_drop > 0 then autodrop(1796, d_drop) end
+if w_drop > 0 then autodrop(242, w_drop) end
+    local result =
+        "`2Dropped: `9" .. b_drop ..
+        " BGL  `9" .. d_drop ..
+        " DL  `9"..w_drop..
+        " WL"
     ontext(result)
     log(result)
     ontalk(result)
-    return true
+return true
 end
 
 if cmd("/bal") then
@@ -4871,18 +4777,3 @@ else
     log("`4[Kou Project] Hook API addHook tidak tersedia.")
 end
 
--- Open the Gazette dialog automatically when this script starts.
-if type(runThread) == "function" and type(Sleep) == "function" then
-    runThread(function()
-        Sleep(1000)
-        local ok, err = pcall(openGazette)
-        if not ok then
-            log("`4[Kou Project] Gagal membuka Gazette: " .. tostring(err))
-        end
-    end)
-else
-    local ok, err = pcall(openGazette)
-    if not ok then
-        log("`4[Kou Project] Gagal membuka Gazette: " .. tostring(err))
-    end
-end
