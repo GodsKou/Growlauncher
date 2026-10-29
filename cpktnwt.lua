@@ -765,7 +765,9 @@ taxset = "5"
 saved_tax = 0
 local savedWeather = tonumber(pref:get("saved_weather", nil))
 if savedWeather == 0 then savedWeather = nil end -- ID 0 disimpan sebagai status default/non-override.
-
+local pull = false
+local kick = false
+local ban = false
 -- Terapapkan visual weather tersimpan langsung tanpa Sleep/delay.
 -- Dipanggil saat world spawn/masuk kembali; jika API tidak tersedia, tidak membuat script error.
 local function applySavedVisualWeather()
@@ -2392,18 +2394,155 @@ end
 openGazette()
 
 
-function hook(packetType, str, packet)
+-- =========================================================
+-- KOU PROJECT AUTO SPAM TEXT
+-- Uses the existing checkworld() and main hook(packetType, str, packet).
+-- =========================================================
+local savedRandomColor = pref:get("spam_text_random_color", false)
+local spamText = {
+    message = tostring(pref:get("spam_text_message", "Hello World!")),
+    interval = math.max(1000, tonumber(pref:get("spam_text_interval", 3000)) or 3000),
+    randomColor = savedRandomColor == true or savedRandomColor == "1" or savedRandomColor == "true",
+    running = false
+}
 
-str = tostring(str or "")
+local function openSpamTextDialog()
+    local status = spamText.running and "`2RUNNING" or "`4STOPPED"
+    local message = tostring(spamText.message or ""):gsub("[\r\n]", " "):gsub("|", "/")
 
-local input = str:lower():gsub("^.*|", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local d = [[
+set_default_color|`o
+add_label_with_icon|big|`bKou Project `w- Auto Spam Text|left|32|
+add_spacer|small|
+]]
+    d = d .. "add_text_input|spam_text_message|Message|" .. message .. "|200|\n"
+    d = d .. "add_text_input|spam_text_interval|Interval (ms)|" .. tostring(spamText.interval) .. "|10|\n"
+    d = d .. "add_checkbox|spam_text_random_color|`wRandom Color Mode|" .. (spamText.randomColor and "1" or "0") .. "|\n"
+    d = d .. "add_checkbox|spam_text_enabled|`wEnable Auto Spam Text|" .. (spamText.running and "1" or "0") .. "|\n"
+    d = d .. "add_smalltext|When enabled, each spam message gets a random color code. Example: `2SPAMTEXT|\n"
+    d = d .. "add_smalltext|Status: " .. status .. "|\n"
+    d = d .. [[
+add_spacer|small|
+add_button|spam_text_save|`9Apply / Save Settings|
+add_quick_exit|
+end_dialog|spam_text_dialog|Close|
+]]
+    SendVariant({v1 = "OnDialogRequest", v2 = d})
+end
 
-local function cmd(command)
-    local expected = command:lower()
-    if input == expected then
+local function handleSpamTextDialog(packet)
+    if not packet:find("action|dialog_return", 1, true)
+        or not packet:find("dialog_name|spam_text_dialog", 1, true) then
+        return false
+    end
+
+    local fields = {}
+    for line in packet:gmatch("[^\r\n]+") do
+        local key, value = line:match("^([^|]+)|([^|]*)$")
+        if key then fields[key] = value end
+    end
+
+    -- Closing the dialog without clicking an action does not change the state.
+    local message = fields.spam_text_message
+    local interval = tonumber(fields.spam_text_interval)
+    local enabled = fields.spam_text_enabled
+    local randomColor = fields.spam_text_random_color
+    local button = fields.buttonClicked
+
+    if message ~= nil then
+        spamText.message = message:gsub("[\r\n]", " ")
+    end
+    if interval then
+        spamText.interval = math.max(1000, math.floor(interval))
+    end
+
+    -- The checkbox is the Start/Stop control. Apply saves its current state.
+    if button == "spam_text_save" or button == "Apply" then
+        spamText.randomColor = randomColor == "1" or randomColor == "true"
+
+        local requestedRunning = enabled == "1" or enabled == "true"
+
+        if requestedRunning and not checkworld() then
+            spamText.running = false
+            log("`4[SpamText] `wMasuk world terlebih dahulu. Checklist dimatikan.")
+        else
+            local wasRunning = spamText.running
+            spamText.running = requestedRunning
+            if spamText.running and not wasRunning then
+                log("`2[SpamText] `wAuto Spam Text dimulai.")
+            elseif not spamText.running and wasRunning then
+                log("`4[SpamText] `wAuto Spam Text dihentikan.")
+            end
+        end
+
+        local ok, err = pcall(function()
+            pref:set("spam_text_message", spamText.message)
+            pref:set("spam_text_interval", spamText.interval)
+            pref:set("spam_text_random_color", spamText.randomColor)
+            pref:save()
+        end)
+        if ok then
+            log("`2[SpamText] `wPengaturan disimpan.")
+        else
+            log("`4[SpamText] Gagal menyimpan pengaturan: " .. tostring(err))
+        end
+    else
         return true
     end
-    return input:sub(1, #expected + 1) == expected .. " "
+
+    openSpamTextDialog()
+    return true
+end
+
+local ameEnabled = false
+
+function hook(packetType, str, packet)
+    str = tostring(str or "")
+
+    -- Extract only the chat text field; avoid gsub("^.*|", "") because
+    -- Lua's dot does not reliably parse multiline Growtopia packets.
+    local chatInput = nil
+    if str:find("action|input", 1, true) then
+        chatInput = str:match("action|input\n|text|([^\r\n]*)")
+            or str:match("action|input\r\n|text|([^\r\n]*)")
+            or str:match("action|input\ntext|([^\r\n]*)")
+            or str:match("action|input\r\ntext|([^\r\n]*)")
+    end
+
+    local input = tostring(chatInput or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+
+    local function cmd(command)
+        local expected = tostring(command or ""):lower()
+        if input == expected then
+            return true
+        end
+        return input:sub(1, #expected + 1) == expected .. " "
+    end
+
+    -- /ame toggles automatic /me formatting for ordinary chat messages.
+    if cmd("/ame") then
+        ameEnabled = not ameEnabled
+        ontext("`9Auto /me : " .. (ameEnabled and "`2ON" or "`4OFF"))
+        log("`9Auto /me : " .. (ameEnabled and "`2ON" or "`4OFF"))
+        return true
+    end
+
+    -- Prefix regular chat with /me while enabled. Slash commands are left alone.
+    -- The replacement starts with /me, so it won't be prefixed recursively.
+    if ameEnabled and chatInput and input ~= "" and input:sub(1, 1) ~= "/" then
+        SendPacket(2, "action|input\n|text|/me " .. chatInput)
+        return true
+    end
+
+-- Auto Spam Text command: parse the chat text field directly because it follows a newline.
+
+if cmd("/spam") then
+    openSpamTextDialog()
+    return true
+end
+
+if handleSpamTextDialog(str) then
+    return true
 end
 
 if cmd("/option") then
@@ -2506,6 +2645,7 @@ add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
 add_textbox|`wGems Tools|left|
 text_scaling_string|SubsToIptxtxD|
+add_button_with_icon|spammode|`wSpam Mode|staticPurpleFrame|5770|
 add_button_with_icon|open_logs|`wLogs|staticPurpleFrame|1752|
 add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
@@ -2646,6 +2786,11 @@ end
 
 if str:find("buttonClicked|btkbutton") then
 btk()
+return true
+end
+
+if str:find("buttonClicked|spammode") then
+openSpamTextDialog()
 return true
 end
 
@@ -3053,96 +3198,128 @@ end
         return true
     end
     
-pull = false
-kick = false
-ban = false
-if cmd("/wr 0") then
-pull = false
-kick = false
-ban = false
-ont("`9Wrench Mode : Normal")
-log("`9Wrench Mode : Normal")
-return true
-end
-if cmd("/wr 1") then
-pull = true
-kick = false
-ban = false
-ontext("`9Wrench Mode : `cPull ")
-log("`9Wrench Mode : `cPull ")
-return true 
-end
-if cmd("/wr 2") then
-pull = false
-kick = true
-ban = false
-ontext("`9Wrench Mode : `cKick ")
-log("`9Wrench Mode : `cKick ")
-return true 
-end
-if cmd("/wr 3") then
-pull = false
-kick = false
-ban = true
-ontext("`9Wrench Mode : `4Ban ")
-log("`9Wrench Mode : `4Ban ")
-return true 
-end
 
-if pull then
-    if str:find("action|wrench\n|netid|(%d+)") then
-        id = str:match("|netid|(%d+)")
-        netid0 = tonumber(id)
-        for _, plr in pairs(GetPlayerList()) do
-            if tonumber(plr.netID) == netid0 then
-                SendPacket(2, "action|dialog_return\ndialog_name|popup\nnetID|"..netid0.."|\nbuttonClicked|pull")
-                ontext("`9Pull "..plr.name)
-                return true
-            end
+
+
+    if cmd("/wr 0") then
+        pull = false
+        kick = false
+        ban = false
+        ontext("`9Wrench Mode : Normal")
+        log("`9Wrench Mode : Normal")
+        return true
+
+    elseif cmd("/wr 1") then
+        pull = true
+        kick = false
+        ban = false
+        ontext("`9Wrench Mode : `cPull")
+        log("`9Wrench Mode : `cPull")
+        return true
+
+    elseif cmd("/wr 2") then
+        pull = false
+        kick = true
+        ban = false
+        ontext("`9Wrench Mode : `cKick")
+        log("`9Wrench Mode : `cKick")
+        return true
+
+    elseif cmd("/wr 3") then
+        pull = false
+        kick = false
+        ban = true
+        ontext("`9Wrench Mode : `4Ban")
+        log("`9Wrench Mode : `4Ban")
+        return true
+    end
+
+    local netid0 = str:match("^action|wrench\n|netid|(%d+)")
+    if not netid0 then
+        return false
+    end
+
+    netid0 = tonumber(netid0)
+    if not netid0 then
+        return false
+    end
+
+    local action
+    local message
+
+    if pull then
+        action = "pull"
+        message = "`9Pull "
+    elseif kick then
+        action = "kick"
+        message = "`4Kicking "
+    elseif ban then
+        action = "world_ban"
+        message = "`4Banning "
+    else
+        return false
+    end
+
+    for _, plr in pairs(GetPlayerList()) do
+        if tonumber(plr.netID) == netid0 then
+            SendPacket(
+                2,
+                "action|dialog_return\ndialog_name|popup\nnetID|"
+                    .. netid0
+                    .. "|\nbuttonClicked|"
+                    .. action
+            )
+
+            ontext(message .. plr.name)
+            return true
         end
     end
-end
 
-if kick then
-    if str:find("action|wrench\n|netid|(%d+)") then
-        id = str:match("|netid|(%d+)")
-        netid0 = tonumber(id)
-        for _, plr in pairs(GetPlayerList()) do
-            if tonumber(plr.netID) == netid0 then
-                ontext("`sKicking "..plr.name)
-                return true
-            end
-        end
-    end
-end
+    
 
-if ban then
-    if str:find("action|wrench\n|netid|(%d+)") then
-        id = str:match("|netid|(%d+)")
-        netid0 = tonumber(id)
-        for _, plr in pairs(GetPlayerList()) do
-            if tonumber(plr.netID) == netid0 then
-                ontext("`4Banning "..plr.name)
-                return true
-            end
-        end
-    end
-end
+
+
     
     if cmd("/pullall") then
-    playerAction("pull")
-    return true
-end
+    local action = "pull"
+    local message = "`9Pulling `wAll Player Target : "..count
+    elseif cmd("/kickall") then
+    local action = "kick"
+    local message = "`4Kicking `wAll Player Target : "..count
+    elseif cmd("/banall") then
+    local action = "world_ban"
+    local message = "`9Banning `wAll Player Target : "..count
+        if not checkworld() then
+            ontext("`4Kamu harus berada di world!")
+            return true
+        end
 
-if cmd("/kickall") then
-    playerAction("kick")
-    return true
-end
+        local localPlayer = GetLocal()
+        local localNetID = localPlayer and tonumber(localPlayer.netID)
+        local players = GetPlayerList()
+        local count = 0
 
-if cmd("/banall") then
-    playerAction("ban")
-    return true
-end
+        for _, plr in pairs(players) do
+            local netid = plr and tonumber(plr.netID)
+
+            if netid and netid ~= localNetID then
+                SendPacket(
+                2,
+                "action|dialog_return\ndialog_name|popup\nnetID|"
+                    .. netid
+                    .. "|\nbuttonClicked|"
+                    .. action
+            )
+
+                count = count + 1
+                Sleep(100)
+            end
+        end
+
+        ontext(message)
+        log(message)
+        return true
+    end
 
   if cmd("/gems") then
   punchgems = not punchgems
@@ -4763,6 +4940,37 @@ if name == "scan_gems" then
     
 
 return false
+end
+
+-- Auto Spam Text worker: waits while outside a valid world and never calls GetWorld().
+if type(runThread) == "function" and type(Sleep) == "function" then
+    runThread(function()
+        while true do
+            if spamText.running then
+                if checkworld() then
+                    local ok, err = pcall(function()
+                        local message = tostring(spamText.message or "")
+                        if spamText.randomColor then
+                            local colors = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"}
+                            local color = colors[math.random(1, #colors)]
+                            message = "`" .. color .. " " .. message
+                        end
+                        SendPacket(2, "action|input\n|text|" .. message)
+                    end)
+                    if not ok then
+                        log("`4[SpamText] Gagal mengirim pesan: " .. tostring(err))
+                        spamText.running = false
+                    end
+                    Sleep(math.max(1000, spamText.interval))
+                else
+                    -- Pause sending outside world; it can resume once world safety passes.
+                    Sleep(500)
+                end
+            else
+                Sleep(250)
+            end
+        end
+    end)
 end
 
 -- Start the world collect/drop scanner only once; it uses existing Kou Project hooks.
