@@ -4973,7 +4973,7 @@ if type(runThread) == "function" and type(Sleep) == "function" then
     end)
 end
 
--- Start the world collect/drop scanner only once; it uses existing Kou Project hooks.
+-- Start the world collect/drop scanner only once; it uses existing Kou Project hooks
 if type(runThread) == "function" and type(Sleep) == "function" then
     runThread(function()
         while true do
