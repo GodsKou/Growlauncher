@@ -1,13 +1,9 @@
 pref = require("preferences")
-
 pref:new("KouProjectConfig")
 pref:load()
-
--- Safety checks shared by world/object/player-dependent features.
 local function checkworld()
     local worldName = nil
     local worldApiFound = false
-
     if type(GetWorldName) == "function" then
         worldApiFound = true
         local ok, result = pcall(GetWorldName)
@@ -21,13 +17,10 @@ local function checkworld()
         local ok, result = pcall(getworld)
         if ok and type(result) == "table" then worldName = result.name end
     end
-
-    -- Fail closed if world state cannot be confirmed.
     if not worldApiFound then return false end
     if type(worldName) ~= "string" then return false end
     worldName = worldName:match("^%s*(.-)%s*$") or ""
     if worldName == "" or worldName:upper() == "EXIT" then return false end
-
     local localGetter = GetLocal or getLocal
     if type(localGetter) == "function" then
         local ok, player = pcall(localGetter)
@@ -35,7 +28,6 @@ local function checkworld()
     end
     return true
 end
-
 local function GetObjectListSafe()
     if not checkworld() then return nil end
     local getter = getObjectList or GetObjectList
@@ -46,7 +38,6 @@ local function GetObjectListSafe()
     end
     return objects
 end
-
 local function GetPlayerListSafe()
     if not checkworld() then return nil end
     local getter = getPlayerList or GetPlayerList
@@ -57,7 +48,6 @@ local function GetPlayerListSafe()
     end
     return players
 end
-
 growz_enabled = pref:get("growz_enabled", false)
 saveworldsaved = pref:get("save_world", "")
 speed_growz = pref:get("speed_growz", 3)
@@ -67,21 +57,14 @@ fasttake = pref:get("fasttake", false)
 noparticle = pref:get("noparticle", false)
 blink_color = pref:get("blink_color", false)
 world_collect_drop_logs_enabled = pref:get("world_collect_drop_logs_enabled", true) == true
-
--- Keep relog state between hook callbacks; do not reset it on every packet.
 local relogWorld = nil
 local relogPending = false
-
 local checklist = {
     blinkMode = pref:get("checklist_blinkMode", false) == true
 }
-
 local blinkThreadRunning = false
-
 local function applyChecklistBlink()
-    -- Both the checklist option and the legacy blink_color option share one thread.
     blinking = (checklist.blinkMode == true) or (blink_color == true)
-
     if blinking and not blinkThreadRunning then
         blinkThreadRunning = true
         runThread(function()
@@ -93,41 +76,33 @@ local function applyChecklistBlink()
         end)
     end
 end
-
 local function saveChecklist()
     local ok, err = pcall(function()
         pref:set("checklist_blinkMode", checklist.blinkMode)
         pref:save()
     end)
-
     if not ok then
         log("`4[Checklist] Gagal menyimpan: " .. tostring(err))
         return false
     end
-
     log("`2[Checklist] Konfigurasi berhasil disimpan.")
     return true
 end
-
 local function openChecklist()
     local dialog = [[
 set_default_color|`o
 add_label_with_icon|big|`wChecklist Settings|left|32|
 add_spacer|small|
 ]]
-
     dialog = dialog
         .. "add_checkbox|blink_mode|`wBlink Mode|"
         .. (checklist.blinkMode and "1" or "0") .. "|\n"
-
     dialog = dialog .. [[
 add_spacer|small|
 end_dialog|checklist_dialog|Cancel|Save|
 ]]
-
     SendVariant({v1 = "OnDialogRequest", v2 = dialog})
 end
-
 local function parseChecklistFields(packet)
     local fields = {}
     for line in packet:gmatch("[^\r\n]+") do
@@ -138,32 +113,23 @@ local function parseChecklistFields(packet)
     end
     return fields
 end
-
 local function processChecklistReturn(packet)
     local fields = parseChecklistFields(packet)
-
-    -- Tombol Cancel tidak mengubah konfigurasi yang tersimpan.
     if fields.buttonClicked == "Cancel" then
         return true
     end
-
-    -- Dialog ini hanya memiliki checkbox Blink Mode.
     if fields.blink_mode == nil then
         log("`4[Checklist] Data checkbox Blink Mode tidak ditemukan.")
         return true
     end
-
     checklist.blinkMode = fields.blink_mode == "1"
-
     if not saveChecklist() then
         return true
     end
-
     applyChecklistBlink()
     log("`2[Checklist] Blink Mode: " .. (checklist.blinkMode and "ON" or "OFF"))
     return true
 end
-
 modmeno = [[
 {
     "sub_name": "MOD TOOLS",
@@ -262,7 +228,6 @@ modmeno = [[
     ]
 }
 ]]
-
 csnmeno = [[
 {
     "sub_name": "CSN CENTER",
@@ -320,7 +285,6 @@ csnmeno = [[
     ]
 }
 ]]
-
 bjmeno = [[
 {
     "sub_name": "BJ CENTER",
@@ -440,7 +404,6 @@ bjmeno = [[
     ]
 }
 ]]
-
 logsmeno = [[
 {
     "sub_name": "LOG CENTER",
@@ -473,11 +436,9 @@ logsmeno = [[
             "icon": "Bolt",
             "alias": "spinlogss"
         }
-        
     ]
 }
 ]]
-
 require("IniEy")
 addCategory("KOU PROJECT", "settings")
 addIntoModule(modmeno, "KOU PROJECT")
@@ -485,11 +446,9 @@ addIntoModule(csnmeno, "KOU PROJECT")
 addIntoModule(bjmeno, "KOU PROJECT")
 addIntoModule(logsmeno, "KOU PROJECT")
 sendNotification("KOU PROXY")
-
 world_logs = {}
 spin_logs = {}
 max_logs_limit = 50
-
 function add_log(table_ref, msg)
     local clean_msg = tostring(msg or ""):gsub("\n", " ")
     table.insert(table_ref, 1, clean_msg)
@@ -497,7 +456,6 @@ function add_log(table_ref, msg)
         table.remove(table_ref)
     end
 end
-
 function show_logs_menu()
     local logs_menu = [[
 set_bg_color|10, 10, 10, 180|
@@ -517,14 +475,9 @@ end_dialog|logs_menu_main|||
 ]]
     dialog(logs_menu)
 end
-
-
--- =========================================================
--- WORLD COLLECT / DROP LOGS (simplified)
 local wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil
 local world_logs_search = ""
 local lock_ids = {242, 1796, 7188}
-
 local function wcd_world_name()
     local world
     if type(getWorld) == "function" then
@@ -542,22 +495,18 @@ local function wcd_world_name()
     if type(name) ~= "string" or name == "" or name:upper() == "EXIT" then return nil end
     return name
 end
-
 local function wcd_get_inventory()
     local result = {}
     for _, id in ipairs(lock_ids) do result[id] = type(inv) == "function" and (tonumber(inv(id)) or 0) or 0 end
     return result
 end
-
 local function wcd_item_name(id)
     return id == 242 and "WL" or id == 1796 and "DL" or id == 7188 and "BGL" or "LOCK"
 end
-
 local function wcd_player_name(player)
     return tostring(player and (player.name or player.name4 or player.displayName or player.name3) or "Unknown")
         :gsub("|", "/"):gsub("\n", " "):match("^%s*(.-)%s*$") or "Unknown"
 end
-
 local function wcd_my_name()
     local player
     if type(GetLocal) == "function" then
@@ -566,7 +515,6 @@ local function wcd_my_name()
     end
     return wcd_player_name(player or {name = nick})
 end
-
 local function wcd_nearest_player(x, y, max_distance)
     local best, best_distance = "Unknown", (max_distance or 160)
     local players = {}
@@ -594,7 +542,6 @@ local function wcd_nearest_player(x, y, max_distance)
     end
     return best
 end
-
 local function wcd_add_log(action, player, amount, id, world)
     local color = id == 242 and "`9" or id == 1796 and "`1" or id == 7188 and "`e" or "`w"
     local arrow = action == "COLLECT" and "`w<<" or "`w>>"
@@ -604,10 +551,7 @@ local function wcd_add_log(action, player, amount, id, world)
         color .. tostring(amount) .. " `w" .. wcd_item_name(id)
     add_log(world_logs, msg)
 end
-
 local function wcd_scan_world()
-    -- JSON UI toggle: when disabled, do not scan or record world changes.
-    -- Clear snapshots so re-enabling starts with a clean baseline.
     if world_collect_drop_logs_enabled ~= true then
         wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil
         return
@@ -621,7 +565,6 @@ local function wcd_scan_world()
     if world ~= wcd_world then
         wcd_world, wcd_snapshot, wcd_inventory_snapshot = world, nil, nil
     end
-
     local inv_now = wcd_get_inventory()
     local delta = {}
     for _, id in ipairs(lock_ids) do delta[id] = inv_now[id] - ((wcd_inventory_snapshot and wcd_inventory_snapshot[id]) or inv_now[id]) end
@@ -629,7 +572,6 @@ local function wcd_scan_world()
     if type(getter) ~= "function" then return end
     local ok, objects = pcall(getter)
     if not ok or type(objects) ~= "table" or next(objects) == nil then return end
-
     local current = {}
     for _, obj in pairs(objects) do
         if type(obj) == "table" then
@@ -645,7 +587,6 @@ local function wcd_scan_world()
             end
         end
     end
-
     if wcd_snapshot then
         for key, obj in pairs(current) do
             local old = wcd_snapshot[key]
@@ -666,7 +607,6 @@ local function wcd_scan_world()
     end
     wcd_snapshot, wcd_inventory_snapshot = current, inv_now
 end
-
 local function show_world_logs(query)
     if query ~= nil then world_logs_search = tostring(query) end
     local search = world_logs_search:lower()
@@ -687,11 +627,9 @@ local function show_world_logs(query)
     d = d .. "add_button|btn_world_logs_back|`wBack to Menu|\nend_dialog|logs_view|Close||\n"
     dialog(d)
 end
-
 spin_mode = "FAST WHEEL"
 spintext = nil
 uidplayer = nil
-
 GTPS = true
 systemlog = "`7[ `4KILLYOURIDOL `7]`o "
 date = os.date("%d, %b, %Y")
@@ -768,8 +706,6 @@ if savedWeather == 0 then savedWeather = nil end -- ID 0 disimpan sebagai status
 local pull = false
 local kick = false
 local ban = false
--- Terapapkan visual weather tersimpan langsung tanpa Sleep/delay.
--- Dipanggil saat world spawn/masuk kembali; jika API tidak tersedia, tidak membuat script error.
 local function applySavedVisualWeather()
     if not savedWeather or not growtopia or type(growtopia.setWeather) ~= "function" then
         return false
@@ -779,18 +715,13 @@ local function applySavedVisualWeather()
     end)
     return ok
 end
-
--- Kembalikan visual weather ke default dan hapus pilihan yang disimpan.
 local function removeVisualWeather()
     savedWeather = nil
     pcall(function()
-        -- Simpan 0 sebagai penanda tidak ada override; loader mengubahnya kembali menjadi nil.
         pref:set("saved_weather", 0)
         pref:save()
     end)
-
     if growtopia and type(growtopia.setWeather) == "function" then
-        -- ID 0 dipakai untuk mengembalikan visual weather ke default.
         local ok = pcall(function() growtopia.setWeather(0) end)
         if not ok then
             pcall(function() growtopia.setWeather(nil) end)
@@ -820,19 +751,16 @@ Config = {
     autoConvertY = 41,
     blink = false
 	}
-
 function notify(msg)
     if growtopia and growtopia.notify then
         growtopia.notify(msg)
     end
     log(msg)
 end
-
 function message(hax)
 SendPacket(2,"action|input\ntext|(troll) "..hax.."")
 return true
 end
-
 function kou(var)
 var = {}
 var.v1 = "OnAddNotification"
@@ -841,29 +769,24 @@ var.v4 = "audio/gauntlet_spawn.wav"
 SendVariant(var)
 return true
 end
-
 function wear(id)
     local pkt = {}
     pkt.type = 10
     pkt.value = id
     SendPacketRaw(false, pkt)
 end
-
 function dialog(tkss)
 va = {}
 va.v1 = "OnDialogRequest"
 va.v2 = tkss
 SendVariant(va)
 end
-
 function log(str)
 LogToConsole(systemlog .. str)
 end
-
 function ontalk(str)
     local me = (type(GetLocal) == "function" and GetLocal()) or nil
     if type(me) ~= "table" then return end
-
     local variant = {
         v1 = "OnTalkBubble",
         v2 = me.netID or me.netid,
@@ -873,14 +796,12 @@ function ontalk(str)
         SendVariant(variant)
     end
 end
-
 function ontext(str)
 o = {}
 o.v1 = "OnTextOverlay"
 o.v2 = str
 SendVariant(o)
 end
-
 function notify(str)
     if growtopia and type(growtopia.notify) == "function" then
         growtopia.notify(tostring(str or ""))
@@ -888,14 +809,12 @@ function notify(str)
         log(tostring(str or ""))
     end
 end
-
 function greenbox(x, y)
     SendPacketRaw(true, {
         type = 38,
         netid = tonumber(string.format("%02d%02d", y, x))
     })
 end
-
 function path(x, y, is_left)
     local f_state = 32
     local x_off = 8
@@ -905,7 +824,6 @@ function path(x, y, is_left)
     end
     SendPacketRaw(false, {type = 0, x = x*32 + x_off, y = y*32, state = f_state})
 end
-
 function inv(id)
     for _, item in pairs(GetInventory()) do
         local i_id = item.id or item.itemid
@@ -916,7 +834,6 @@ function inv(id)
     end
     return 0
 end
-
 function checkitm(id)
     local inv = GetInventory()
     if type(inv) ~= "table" then return 0 end
@@ -927,18 +844,13 @@ function checkitm(id)
     end
     return 0
 end
-
 local gemsRepeatThreadRunning = false
-
 function repeatgems()
-    -- Prevent duplicate workers, but always release the lock when the worker exits.
     if gemsRepeatThreadRunning then return end
     gemsRepeatThreadRunning = true
-
     local ok, err = pcall(function()
         while gemsrepeat do
             local worldOk, inWorld = pcall(checkworld)
-
             if worldOk and inWorld then
                 local scanOk, scanErr = pcall(ScanGemsParticle)
                 if not scanOk then
@@ -946,20 +858,15 @@ function repeatgems()
                 end
                 Sleep(2000)
             else
-                -- Do not terminate the worker outside a world; wait and retry.
-                -- This also allows Gems Repeat to resume after entering a world.
                 Sleep(500)
             end
         end
     end)
-
     gemsRepeatThreadRunning = false
-
     if not ok then
         log("`4[Gems Repeat] Worker error: " .. tostring(err))
     end
 end
-
 function setblink()
     local colors = {
         3370516479,
@@ -979,7 +886,6 @@ function setblink()
         3033464831,
         3370516479
     }
-
     while blinking do
         if not checkworld() then
             Sleep(1000)
@@ -988,22 +894,18 @@ function setblink()
                 if not blinking then
                     break
                 end
-
                 if not checkworld() then
                     break
                 end
-
                 SendPacket(2, "action|setSkin\ncolor|" .. tostring(color))
                 Sleep(500)
             end
         end
     end
 end
-
 if checklist.blinkMode or blink_color then
     applyChecklistBlink()
 end
-
 function toggleAutoConvert()
     Config.autoConvert = not Config.autoConvert
     if Config.autoConvert then
@@ -1015,14 +917,11 @@ function toggleAutoConvert()
         ontext("`9Auto Convert : `4OFF")
     end
 end
-
 function rdrop(id, amount)
-
     SendPacket(2, "action|drop\n|itemID|" .. tostring(id))
     SendPacket(2, "action|dialog_return\ndialog_name|drop_item\nitemID|" .. tostring(id) .. "|\ncount|" .. tostring(amount))
     return true
 end
-
 function autodrop(id, amount)
     local left = amount
     while left > 200 do
@@ -1035,7 +934,6 @@ function autodrop(id, amount)
         rdrop(id, left)
     end
 end
-
 function pos(px,py)
 local hasil
 if not px and not py then
@@ -1045,7 +943,6 @@ hasil = "`b[`2X: `5"..px.."`w,`2Y: `5"..py.."`b]"
 end
 return hasil
 end
-
 tile = {
 pos1 = {
 {x = gemsrightx1, y = gemsrighty1}, {x = gemsrightx2, y = gemsrighty2}, {x = gemsrightx3, y = gemsrighty3}, {x = gemsrightx4, y = gemsrighty4}, {x = gemsrightx5, y = gemsrighty5}, {x = gemsrightx6, y = gemsrighty6}, {x = gemsrightx7, y = gemsrighty7}, {x = gemsrightx8, y = gemsrighty8}
@@ -1054,114 +951,90 @@ pos2 = {
 {x = gemsleftx1, y = gemslefty1}, {x = gemsleftx2, y = gemslefty2}, {x = gemsleftx3, y = gemslefty3}, {x = gemsleftx4, y = gemslefty4}, {x = gemsleftx5, y = gemslefty5}, {x = gemsleftx6, y = gemslefty6}, {x = gemsleftx7, y = gemslefty7}, {x = gemsleftx8, y = gemslefty8}
 }
 }
-
 function takeblock()
     if not checkworld() then return end
     tile = tile
-
     local TAKE_TOLERANCE = 10
-
     local function isObjectInTile(obj, tiles)
         if not obj or not tiles then
             return false
         end
-
         local objX = tonumber(obj.posX)
         local objY = tonumber(obj.posY)
-
         if (not objX or not objY) and obj.pos then
             objX = tonumber(obj.pos.x)
             objY = tonumber(obj.pos.y)
         end
-
         if not objX or not objY then
             return false
         end
-
         local tileX = tonumber(tiles.x)
         local tileY = tonumber(tiles.y)
-
         if not tileX or not tileY then
             return false
         end
-
         local minX = (tileX * 32) - TAKE_TOLERANCE
         local maxX = ((tileX + 1) * 32) + TAKE_TOLERANCE
         local minY = (tileY * 32) - TAKE_TOLERANCE
         local maxY = ((tileY + 1) * 32) + TAKE_TOLERANCE
-
         return objX >= minX
            and objX <= maxX
            and objY >= minY
            and objY <= maxY
     end
-
     local objectGetter = GetObjectList or getObjectList
     local objects = {}
     if type(objectGetter) == "function" then
         local ok, result = pcall(objectGetter)
         if ok and type(result) == "table" then objects = result end
     end
-
     for _, obj in pairs(objects) do
         for _, tiles in pairs(tile.pos1 or {}) do
             if isObjectInTile(obj, tiles) then
                 local objX = tonumber(obj.posX)
                 local objY = tonumber(obj.posY)
-
                 if (not objX or not objY) and obj.pos then
                     objX = tonumber(obj.pos.x)
                     objY = tonumber(obj.pos.y)
                 end
-
                 if objX and objY and obj.id then
                     local pkt = {}
                     pkt.type = 11
                     pkt.value = obj.id
                     pkt.x = objX
                     pkt.y = objY
-
                     SendPacketRaw(false, pkt)
                 end
-
                 break
             end
         end
     end
-
     for _, obj in pairs(objects) do
         for _, tiles in pairs(tile.pos2 or {}) do
             if isObjectInTile(obj, tiles) then
                 local objX = tonumber(obj.posX)
                 local objY = tonumber(obj.posY)
-
                 if (not objX or not objY) and obj.pos then
                     objX = tonumber(obj.pos.x)
                     objY = tonumber(obj.pos.y)
                 end
-
                 if objX and objY and obj.id then
                     local pkt = {}
                     pkt.type = 11
                     pkt.value = obj.id
                     pkt.x = objX
                     pkt.y = objY
-
                     SendPacketRaw(false, pkt)
                 end
-
                 break
             end
         end
     end
-
     return false
 end
-
 function checkgems()
-    if not checkworld() then return end 
+    if not checkworld() then return end
     tile = tile
-
     local data = {0, 0}
     local objectGetter = GetObjectList or getObjectList
     local objects = {}
@@ -1169,40 +1042,31 @@ function checkgems()
         local ok, result = pcall(objectGetter)
         if ok and type(result) == "table" then objects = result end
     end
-
     local GEM_TOLERANCE = 10
-
     local function isGemInTile(obj, tiles)
         if not obj or obj.itemid ~= 112 then
             return false
         end
-
         local x = tonumber(obj.posX) or 0
         local y = tonumber(obj.posY) or 0
         local tx = tonumber(tiles.x)
         local ty = tonumber(tiles.y)
-
         if not tx or not ty then
             return false
         end
-
         local left   = tx * 32 - GEM_TOLERANCE
         local right  = (tx + 1) * 32 + GEM_TOLERANCE
         local top    = ty * 32 - GEM_TOLERANCE
         local bottom = (ty + 1) * 32 + GEM_TOLERANCE
-
         return x >= left and x <= right and
                y >= top and y <= bottom
     end
-
     local counted1 = {}
     local counted2 = {}
-
     for _, obj in pairs(objects) do
         if obj.itemid == 112 then
             local amount = tonumber(obj.amount) or 0
             local id = obj.id
-
             if amount > 0 then
                 for _, tiles in pairs(tile.pos1 or {}) do
                     if isGemInTile(obj, tiles) then
@@ -1215,7 +1079,6 @@ function checkgems()
                         break
                     end
                 end
-
                 for _, tiles in pairs(tile.pos2 or {}) do
                     if isGemInTile(obj, tiles) then
                         if id == nil or not counted2[id] then
@@ -1230,177 +1093,135 @@ function checkgems()
             end
         end
     end
-
     local p1 = data[2]
     local p2 = data[1]
-
     if p1 > 21 and p2 > 21 then
-
         if p1 < p2 then
       SendPacket(2,
                 "action|input\n|text|" ..
                 "`0[ Player1 ] : `2" .. p1 ..
                 " `bVs `0[ Player2 ] : `4" .. p2
             )
-
             ontalk("`9Pos LEFT `2WIN! `wLowest > 21")
             log("`9Pos LEFT `2WIN! `wLowest > 21")
-
             cg1 = p1
-
         elseif p2 < p1 then
             SendPacket(2,
                 "action|input\n|text|" ..
                 "`0[ Player1 ] : `4" .. p1 ..
                 " `bVs `0[ Player2 ] : `2" .. p2
             )
-
             ontalk("`9Pos RIGHT `2WIN! `wLowest > 21")
             log("`9Pos RIGHT `2WIN! `wLowest > 21")
-
             cg2 = p2
-
         else
             SendPacket(2,
                 "action|input\n|text|" ..
                 "`0[ Player1 ] : `w" .. p1 ..
                 " [ `bTIE `0] `0[ Player2 ] : `w" .. p2
             )
-
             ontalk("`9Nothing Winner `4TIE!")
             log("`9Nothing Winner `4TIE!")
         end
-
     elseif p1 > 21 then
         SendPacket(2,
             "action|input\n|text|" ..
             "`0[ Player1 ] : `4" .. p1 ..
             " `bVs `0[ Player2 ] : `2" .. p2
         )
-
         ontalk("`9Pos Left `4LOSE! `wPlayer1 > 21")
         log("`9Pos Left `4LOSE! `wPlayer1 > 21")
-
         cg2 = p2
-
     elseif p2 > 21 then
         SendPacket(2,
             "action|input\n|text|" ..
             "`0[ Player1 ] : `2" .. p1 ..
             " `bVs `0[ Player2 ] : `4" .. p2
         )
-
         ontalk("`9Pos Right `4LOSE! `wPlayer2 > 21")
         log("`9Pos Right `4LOSE! `wPlayer2 > 21")
-
         cg1 = p1
-
     elseif p1 > p2 then
         SendPacket(2,
             "action|input\n|text|" ..
             "`0[ Player1 ] : `2" .. p1 ..
             " `bVs `0[ Player2 ] : `4" .. p2
         )
-
         ontalk("`9Pos LEFT `2WIN!")
         log("`9Pos LEFT `2WIN!")
-
         cg1 = p1
-
     elseif p2 > p1 then
         SendPacket(2,
             "action|input\n|text|" ..
             "`0[ Player1 ] : `4" .. p1 ..
             " `bVs `0[ Player2 ] : `2" .. p2
         )
-
         ontalk("`9Pos RIGHT `2WIN!")
         log("`9Pos RIGHT `2WIN!")
-
         cg2 = p2
-
     else
         SendPacket(2,
             "action|input\n|text|" ..
             "`0[ Player1 ] : `w" .. p1 ..
             " [ `bTIE `0] `0[ Player2 ] : `w" .. p2
         )
-
         ontalk("`9Nothing Winner `4TIE!")
         log("`9Nothing Winner `4TIE!")
     end
-
     return false
 end
-
 function execute_payout(mode)
     if not Aount or Aount == 0 then
         ontext("`4Warning: Bet value is 0.")
         return
     end
-
     local jl = math.floor(taxset / 100 * Aount * 2)
     local jumlah = math.floor(Aount * 2 - jl)
     local earnedwls = Aount * 2 - jumlah
-
     SendVariant({
         v1 = "OnTalkBubble",
         v2 = GetLocal().netID,
         v3 = "`0You Got : `9+" .. earnedwls .. " `9WL.",
         v5 = 1
     })
-
     if mode == 1 then
         if player1x ~= nil and player1y ~= nil then
             local face_left = false
-
             if player2x ~= nil and player1x < player2x then
                 face_left = true
             end
-
             greenbox(player1x, player1y)
             path(player1x, player1y, face_left)
         end
-
     elseif mode == 2 then
         if player2x ~= nil and player2y ~= nil then
             local face_left = false
-
             if player1x ~= nil and player2x < player1x then
                 face_left = true
             end
-
             greenbox(player2x, player2y)
             path(player2x, player2y, face_left)
         end
-
     elseif mode == 3 then
         if player3x ~= nil and player3y ~= nil then
             local face_left = false
-
             if player4x ~= nil and player3x < player4x then
                 face_left = true
             end
-
             greenbox(player3x, player3y)
             path(player3x, player3y, face_left)
         end
-
     elseif mode == 4 then
         if player4x ~= nil and player4y ~= nil then
             local face_left = false
-
             if player3x ~= nil and player4x < player3x then
                 face_left = true
             end
-
             greenbox(player4x, player4y)
             path(player4x, player4y, face_left)
         end
-
     elseif mode == 5 then
         local local_player = GetLocal()
-
         if local_player then
             greenbox(
                 math.floor(local_player.posX / 32),
@@ -1408,20 +1229,15 @@ function execute_payout(mode)
             )
         end
     end
-
     local drop_bgl = math.floor(jumlah / 10000)
     local rem = jumlah % 10000
-
     local bgl_inventory = inv(7188)
-
     if bgl_inventory < drop_bgl then
         rem = rem + ((drop_bgl - bgl_inventory) * 10000)
         drop_bgl = bgl_inventory
     end
-
     local drop_dl = math.floor(rem / 100)
     local drop_wl = rem % 100
-
     if inv(242) < drop_wl then
         if inv(1796) > drop_dl then
             wear(1796)
@@ -1430,84 +1246,62 @@ function execute_payout(mode)
             wear(1796)
         end
     end
-
     if inv(1796) < drop_dl and inv(7188) > drop_bgl then
         wear(7188)
     end
-
     if drop_bgl > 0 then
         autodrop(7188, drop_bgl)
     end
-
     if drop_dl > 0 then
         autodrop(1796, drop_dl)
     end
-
     if drop_wl > 0 then
         autodrop(242, drop_wl)
     end
-
     Aount = 0
 end
-
 function execute_arroz(mode, count)
     count = tonumber(count) or 0
-
     if count <= 0 then
         ontext("`4Warning: Count is 0.")
         return
     end
-
     local targetX, targetY
     local face_left = false
-
     if mode == 1 then
         targetX, targetY = player1x, player1y
-
         if player1x < player2x then
             face_left = true
         end
-
     elseif mode == 2 then
         targetX, targetY = player2x, player2y
-
         if player2x < player1x then
             face_left = true
         end
-
     elseif mode == 3 then
         targetX, targetY = player3x, player3y
-
         if player3x < player4x then
             face_left = true
         end
-
     elseif mode == 4 then
         targetX, targetY = player4x, player4y
-
         if player4x < player3x then
             face_left = true
         end
-
     else
         ontext("`4Warning: Invalid mode.")
         return
     end
-
     if targetX == nil or targetY == nil then
         ontext("`4Warning: Player position is not set.")
         return
     end
-
     greenbox(targetX, targetY)
     path(targetX, targetY, face_left)
-
     autodrop(4604, count)
-
     ontext("`2Dropped `9" .. count .. " `0Arroz")
     log("`2Dropped `9" .. count .. " `0Arroz")
 end
-
 function btk()
 setupbtk =  [[
 set_bg_color|2, 0, 1, 100|
@@ -1544,48 +1338,38 @@ end_dialog|setupcoy|Cancel|Apply|
 dialog(setupbtk)
 return true
 end
-
 function take()
     local total_pos1, total_pos2 = 0, 0
     local total_pos3, total_pos4 = 0, 0
-
     local player_positions = {
         {x = player1x, y = player1y},
         {x = player2x, y = player2y},
         {x = player3x, y = player3y},
         {x = player4x, y = player4y}
     }
-
     local active_players = {}
-
     for i, pos in ipairs(player_positions) do
         if type(pos.x) == "number" and type(pos.y) == "number" then
             active_players[#active_players + 1] = i
         end
     end
-
     if #active_players < 2 then
         ontext("`4At least 2 player positions must be configured!")
         return true
     end
-
     local totals = {
         [1] = 0,
         [2] = 0,
         [3] = 0,
         [4] = 0
     }
-
     local objects = GetObjectList()
-
     if objects then
         for _, obj in pairs(objects) do
             local bx = math.floor(obj.posX / 32)
             local by = math.floor(obj.posY / 32)
-
             local amt = obj.amount or obj.count or 1
             local lock_val = 0
-
             if obj.itemid == 242 then
                 lock_val = amt
             elseif obj.itemid == 1796 then
@@ -1593,16 +1377,13 @@ function take()
             elseif obj.itemid == 7188 then
                 lock_val = amt * 10000
             end
-
             if lock_val > 0 then
                 for _, i in ipairs(active_players) do
                     local pos = player_positions[i]
-
                     local dist = math.max(
                         math.abs(bx - pos.x),
                         math.abs(by - pos.y)
                     )
-
                     if dist <= 1 then
                         totals[i] = totals[i] + lock_val
                         break
@@ -1611,28 +1392,22 @@ function take()
             end
         end
     end
-
     total_pos1 = totals[1]
     total_pos2 = totals[2]
     total_pos3 = totals[3]
     total_pos4 = totals[4]
-
     local any_locks = false
-
     for _, i in ipairs(active_players) do
         if totals[i] > 0 then
             any_locks = true
             break
         end
     end
-
     if not any_locks then
         ontext("`4No locks found on configured positions!")
         return true
     end
-
     local reference_total = totals[active_players[1]]
-
     for _, i in ipairs(active_players) do
         if totals[i] ~= reference_total then
             ontext(
@@ -1645,17 +1420,13 @@ function take()
             return true
         end
     end
-
     local total_picked = 0
-
     if objects then
         for _, obj in pairs(objects) do
             local bx = math.floor(obj.posX / 32)
             local by = math.floor(obj.posY / 32)
-
             local amt = obj.amount or obj.count or 1
             local lock_val = 0
-
             if obj.itemid == 242 then
                 lock_val = amt
             elseif obj.itemid == 1796 then
@@ -1663,21 +1434,16 @@ function take()
             elseif obj.itemid == 7188 then
                 lock_val = amt * 10000
             end
-
             if lock_val > 0 then
                 for _, i in ipairs(active_players) do
                     local pos = player_positions[i]
-
                     local dist = math.max(
                         math.abs(bx - pos.x),
                         math.abs(by - pos.y)
                     )
-
                     if dist <= 1 then
                         total_picked = total_picked + lock_val
-
                         wear(242)
-
                         SendPacketRaw(false, {
                             px = bx,
                             py = by,
@@ -1686,25 +1452,19 @@ function take()
                             x = obj.posX,
                             y = obj.posY
                         })
-
                         break
                     end
                 end
             end
         end
     end
-
     if total_picked > 0 then
         Aount = math.floor(total_picked / 2)
-
         local tax_deduction = math.floor(
             taxset / 100 * total_picked
         )
-
         saved_tax = tax_deduction
-
         local payout_after_tax = total_picked - tax_deduction
-
         local result =
             "[ Player1 ] : `9" .. total_pos1 .. " WL\n" ..
             "[ Player2 ] : `9" .. total_pos2 .. " WL\n" ..
@@ -1714,70 +1474,54 @@ function take()
             "[ Total ] : `9" .. total_picked .. " WL\n" ..
             "[ PAYOUT ] : `9" .. payout_after_tax .. " WL\n" ..
             "[ `4TAXED`0 ] : `9" .. tax_deduction .. " WL"
-
         ontext(result)
         log(result)
     end
-
     return true
 end
-
     function droptax()
             if saved_tax <= 0 then ontext("`4No tax saved."); return true end
         local target = saved_tax
         local b_drop = math.floor(target / 10000)
         local rem = target % 10000
-
         if inv(7188) < b_drop then rem = rem + ((b_drop - inv(7188)) * 10000); b_drop = inv(7188) end
         local d_drop = math.floor(rem / 100)
         local w_drop = rem % 100
-
         if inv(242) < w_drop then if inv(1796) > d_drop then wear(1796) elseif inv(7188) > b_drop then wear(7188); wear(1796) end end
         if inv(1796) < d_drop and inv(7188) > b_drop then wear(7188) end
-
         if b_drop > 0 then autodrop(7188, b_drop) end
         if d_drop > 0 then autodrop(1796, d_drop) end
         if w_drop > 0 then autodrop(242, w_drop) end
-
         ontext("`0[ Dropped Tax ] : " .. b_drop .. " `eBGL  `0" .. d_drop .. " `1DL  `0" .. w_drop .. " `9WL")
         log("`0[ Dropped Tax ] : " .. b_drop .. " `eBGL  `0" .. d_drop .. " `1DL  `0" .. w_drop .. " `9WL")
         saved_tax = 0
         return true
     end
-
 kou_floating_objects = {}
 kou_floating_search = ""
-
 function kouFloatingScan()
     kou_floating_objects = {}
-
     local objects = getObjectList()
     if not objects then return end
-
     for _, obj in pairs(objects) do
         if obj then
             local itemid = tonumber(obj.itemid) or 0
             local amount = tonumber(obj.amount) or 1
             local object_id = tonumber(obj.id) or 0
-
             if itemid > 0 then
                 local px = 0
                 local py = 0
-
                 if obj.pos then
                     px = tonumber(obj.pos.x) or 0
                     py = tonumber(obj.pos.y) or 0
                 end
-
                 local tile_x = math.floor(px / 32)
                 local tile_y = math.floor(py / 32)
                 local item_info = getItemInfoByID(itemid)
                 local item_name = "Unknown Item"
-
                 if item_info and item_info.name then
                     item_name = tostring(item_info.name)
                 end
-
                 table.insert(kou_floating_objects, {
                     id = object_id,
                     itemid = itemid,
@@ -1789,7 +1533,6 @@ function kouFloatingScan()
             end
         end
     end
-
     table.sort(kou_floating_objects, function(a, b)
         if a.y == b.y then
             if a.x == b.x then
@@ -1800,24 +1543,18 @@ function kouFloatingScan()
         return a.y < b.y
     end)
 end
-
 function kouFloatingMatch(obj)
     if kou_floating_search == "" then
         return true
     end
-
     local item_name = tostring(obj.name or ""):lower()
     local keyword = tostring(kou_floating_search or ""):lower()
-
     return item_name:find(keyword, 1, true) ~= nil
 end
-
 function kouFloatingDialog()
     kouFloatingScan()
-
     local lines = {}
     local shown = 0
-
     table.insert(lines, "set_default_color|`o")
     table.insert(lines, "add_label_with_icon|big|`9Floating Items|left|32|")
     table.insert(lines, "add_smalltext|`7Total Floating Items: `2" .. tostring(#kou_floating_objects) .. "|left|")
@@ -1826,52 +1563,41 @@ function kouFloatingDialog()
     table.insert(lines, "add_button|kou_float_search_btn|`2Search|noflags|")
     table.insert(lines, "add_button|kou_float_clear_btn|`4Clear Search|noflags|")
     table.insert(lines, "add_spacer|small|")
-
     for i, obj in ipairs(kou_floating_objects) do
         if kouFloatingMatch(obj) then
             shown = shown + 1
-
             local text = "`2" .. obj.name .. " `7x" .. tostring(obj.amount) .. " `o[" .. tostring(obj.x) .. "," .. tostring(obj.y) .. "]"
             table.insert(lines, "add_button_with_icon|kou_float_" .. tostring(i) .. "|" .. text .. "|static|" .. tostring(obj.itemid) .. "|")
         end
     end
-
     if shown == 0 then
         table.insert(lines, "add_smalltext|`4No floating item found.|left|")
     end
-
     table.insert(lines, "add_spacer|small|")
     table.insert(lines, "add_smalltext|`7Showing: `2" .. tostring(shown) .. " `7items|left|")
     table.insert(lines, "add_button_with_icon||END_LIST|noflags|0||")
     table.insert(lines, "text_scaling_string|SubsToIptxtxD|")
     table.insert(lines, "add_button|kou_float_refresh|`9Refresh Scan|noflags|")
     table.insert(lines, "end_dialog|kou_floating_dialog|Close||")
-
     dialog(table.concat(lines, "\n"))
 end
-
 function kouFloatingTeleport(index)
     index = tonumber(index)
     if not index then return end
-
     local obj = kou_floating_objects[index]
     if not obj then return end
-
     FindPath(obj.x, obj.y)
 end
-
 local function getTotalGemsAtTile(x_tile, y_tile)
     local total_amount = 0
     if not checkworld() then return 0 end
     local objects = GetObjectListSafe()
     if type(objects) ~= "table" then return 0 end
-
     for _, obj in pairs(objects) do
         if type(obj) == "table" and tonumber(obj.itemid) == 112 then
             local pos = obj.pos
             local px = tonumber(obj.posX) or (type(pos) == "table" and tonumber(pos.x))
             local py = tonumber(obj.posY) or (type(pos) == "table" and tonumber(pos.y))
-
             if px and py then
                 local tx = math.floor((px + 8) / 32)
                 local ty = math.floor((py + 8) / 32)
@@ -1881,16 +1607,13 @@ local function getTotalGemsAtTile(x_tile, y_tile)
             end
         end
     end
-
     return total_amount
 end
-
 local function spawnGemsParticle(x_tile, y_tile, amount)
     if not checkworld() then return end
     if type(x_tile) ~= "number" or type(y_tile) ~= "number" then return end
     local px = (x_tile * 32) + 16
     local py = (y_tile * 32) + 16
-
     if amount and amount > 0 then
         if type(sendPacketRaw) == "function" then
             sendPacketRaw(true, {
@@ -1904,18 +1627,14 @@ local function spawnGemsParticle(x_tile, y_tile, amount)
         end
     end
 end
-
 local pendingParticleTiles = {}
-
 local function triggerParticleAt(tx, ty, delay)
     if not checkworld() then return end
     tx, ty = tonumber(tx), tonumber(ty)
     if not tx or not ty then return end
-
     local key = tostring(tx) .. ":" .. tostring(ty)
     if pendingParticleTiles[key] then return end
     pendingParticleTiles[key] = true
-
     runThread(function()
         local ok, err = pcall(function()
             Sleep(delay or 100)
@@ -1937,7 +1656,6 @@ local function triggerParticleAt(tx, ty, delay)
         end
     end)
 end
-
 function showchatgems()
     runThread(function()
     Sleep(1000)
@@ -1947,16 +1665,13 @@ cg = 0
 return false
     end)
 end
-
 local function triggerParticleAt1(tx, ty, delay)
     if not checkworld() then return end
     tx, ty = tonumber(tx), tonumber(ty)
     if not tx or not ty then return end
-
     local key = tostring(tx) .. ":" .. tostring(ty)
     if pendingParticleTiles[key] then return end
     pendingParticleTiles[key] = true
-
     runThread(function()
         local ok, err = pcall(function()
             Sleep(delay or 100)
@@ -1970,19 +1685,15 @@ local function triggerParticleAt1(tx, ty, delay)
         end
     end)
 end
-
 function ScanGemsParticle()
-    -- No-op outside a loaded world or when the object list is unavailable/empty.
     if not checkworld() then return end
     local objects = GetObjectListSafe()
     if type(objects) ~= "table" then return end
-
     for _, obj in pairs(objects) do
         if type(obj) == "table" and tonumber(obj.itemid) == 112 then
             local pos = obj.pos
             local px = tonumber(obj.posX) or (type(pos) == "table" and tonumber(pos.x))
             local py = tonumber(obj.posY) or (type(pos) == "table" and tonumber(pos.y))
-
             if px and py then
                 local x = math.floor((px + 8) / 32)
                 local y = math.floor((py + 8) / 32)
@@ -1991,20 +1702,16 @@ function ScanGemsParticle()
         end
     end
 end
-
     local function formatGemNumber(number)
         local formatted = tostring(math.floor(number))
         local result
-
         repeat
             formatted, result = formatted:gsub(
                 "^(-?%d+)(%d%d%d)", "%1,%2"
             )
         until result == 0
-
         return formatted
     end
-
     local function sendGemCounterChat(message)
         if not checkworld() then return end
         local meGetter = GetLocal or getLocal
@@ -2015,16 +1722,13 @@ end
             pcall(SendPacket, 2, "action|input\n|text|" .. tostring(message or ""))
         end
     end
-
 runThread(function()
     local idleMilliseconds = 0
     local pollMilliseconds = 100
     local lastObservedAmount = 0
-
     while true do
         if show_gems_collected and checkworld() then
             local currentAmount = tonumber(collectedCounterGems) or 0
-
             if currentAmount > 0 then
                 if currentAmount ~= lastObservedAmount then
                     idleMilliseconds = 0
@@ -2032,7 +1736,6 @@ runThread(function()
                 else
                     idleMilliseconds = idleMilliseconds + pollMilliseconds
                 end
-
                 if idleMilliseconds >= 500 then
                     sendGemCounterChat(
                         "`wCollected `#+" ..
@@ -2052,26 +1755,17 @@ runThread(function()
             idleMilliseconds = 0
             lastObservedAmount = 0
         end
-
         Sleep(pollMilliseconds)
     end
 end)
-
 local function stripOwnPingPrefix(rawName)
     local name = tostring(rawName or "")
-
-    -- Buang prefix ping berulang, termasuk kode warna yang berada
-    -- sebelum tanda tutup kurung, misalnya `2[343`w].
     for _ = 1, 20 do
         local before = name
-        -- Format ping aktual: `w[`2/`6/`4angka`w] Nama.
-        -- Buang prefix ping dengan kode warna yang berbeda agar refresh mengganti,
-        -- bukan menambahkan prefix baru di depan nama.
         name = name:gsub("^%s*`w%[%s*`[%w]%s*%d+`w%]%s*", "")
         name = name:gsub("^%s*`w%[%s*%d+`w%]%s*", "")
         name = name:gsub("^%s*`[%w]%[%s*`[%w]%s*%d+`w%]%s*", "")
         name = name:gsub("^%s*`[%w]%[%s*%d+`w%]%s*", "")
-        -- Format lama yang mungkin sudah tersimpan.
         name = name:gsub("^%s*`#%[%s*`[%w]%s*%d+`#%]%s*", "")
         name = name:gsub("^%s*`#%[%s*%d+`#%]%s*", "")
         name = name:gsub("^%s*`[%w]%s*%[%s*%d+%s*ms%s*%]%s*", "")
@@ -2082,22 +1776,17 @@ local function stripOwnPingPrefix(rawName)
         name = name:gsub("^%s*%[%s*%d+%s*%]%s*", "")
         if name == before then break end
     end
-
     return name
 end
-
 local function getCleanName(rawName)
     if rawName == nil then return "Player" end
     local clean = stripOwnPingPrefix(tostring(rawName))
-    -- Hilangkan akhiran angka spin, baik memakai kode warna maupun tidak.
     clean = clean:gsub("%s*`#%[%s*`?.?%d+`#%s*%]$", "")
     clean = clean:gsub("%s*`7%[%s*`?.?%d+`?%s*%]$", "")
     clean = clean:gsub("%s*%[%s*`?.?%d+`?%s*%]$", "")
     clean = clean:gsub("%s*%[%d+%]%s*$", "")
     return clean:match("^%s*(.-)%s*$") or tostring(rawName)
 end
-
--- Ping hanya ditampilkan pada nama player lokal; angka spin tetap untuk semua player.
 local function getLocalNetIdSafe()
     local getter = GetLocal or getLocal
     if type(getter) ~= "function" then return nil end
@@ -2105,7 +1794,6 @@ local function getLocalNetIdSafe()
     if not ok or type(me) ~= "table" then return nil end
     return tonumber(me.netid or me.netID or me.netId)
 end
-
 local function getLocalPingSafe()
     local pingGetter = getPing or GetPing
     if type(pingGetter) == "function" then
@@ -2123,48 +1811,31 @@ local function getLocalPingSafe()
     end
     return nil
 end
-
 local function buildPlayerDisplayName(baseName, number, color, netid)
-    -- Gunakan nama dari world SAAT INI beserta kode warna yang sedang berlaku.
-    -- Jangan menghapus semua kode warna: itu membuat nama pemilik world jadi putih.
-    -- applyCachedSpinNames memasok baseName dari player list saat ini, bukan cache world lama.
     local name = getCleanName(baseName)
     name = name:match("^%s*(.-)%s*$") or name
-
-    -- OnNameChanged hanya menambahkan angka spin, tanpa prefix ping.
     if number ~= nil then
         name = name .. " `#[ " .. tostring(color or "`b") .. tostring(number) .. "`# ]"
     end
-
     return name
 end
-
--- Nama dinormalisasi agar cache tetap cocok meskipun kode warna/nama tampilan berubah.
 local function normalizeSpinName(rawName)
     local name = getCleanName(rawName)
     name = name:gsub("`.", "")
     return name:lower():match("^%s*(.-)%s*$") or name:lower()
 end
-
--- Cache tetap hidup ketika world berganti; tidak mengembalikan nama ke nama asli.
 local spinNameOriginals = {}
 local spinNumbersByName = {}
-
--- Cegah OnNameChanged mengirim nama target yang sama berulang kali.
--- Cache ini berlaku selama sesi script berjalan.
 local lastSpinDisplayByNetId = {}
 local spinRestoreThreadRunning = false
-
 local function sendSpinNameOnce(displayName, netid)
     netid = tonumber(netid)
     if not checkworld() or not netid or type(displayName) ~= "string" then
         return false
     end
-
     if lastSpinDisplayByNetId[netid] == displayName then
         return false
     end
-
     local ok = pcall(function()
         SendVariant({
             v1 = "OnNameChanged",
@@ -2172,18 +1843,14 @@ local function sendSpinNameOnce(displayName, netid)
             netID = netid
         }, netid)
     end)
-
     if ok then
         lastSpinDisplayByNetId[netid] = displayName
         return true
     end
-
     return false
 end
-
 local function getPlayerName(netid)
     if not checkworld() then return nil end
-
     local list = GetPlayerListSafe()
     if type(list) == "table" then
         for _, player in pairs(list) do
@@ -2193,7 +1860,6 @@ local function getPlayerName(netid)
             end
         end
     end
-
     local localGetter = GetLocal or getLocal
     if type(localGetter) == "function" then
         local ok, me = pcall(localGetter)
@@ -2204,45 +1870,31 @@ local function getPlayerName(netid)
     end
     return nil
 end
-
 local function isOnValidWorldForNameChange()
     return checkworld()
 end
-
--- Reapply cached spin labels after entering/re-entering a world.
--- Cache tables stay in memory across world changes; current NetIDs are refreshed.
 local function applyCachedSpinNames()
     if not isOnValidWorldForNameChange() then
         return
     end
-
     local players = GetPlayerListSafe()
     if type(players) ~= "table" or next(players) == nil then return end
-
     for _, player in pairs(players) do
         if type(player) == "table" then
             local netid = tonumber(player.netid or player.netID)
             local rawName = player.name
-
             if netid and type(rawName) == "string" and rawName ~= "" then
                 local baseName = getCleanName(rawName)
                 local cached = spinNumbersByName[normalizeSpinName(baseName)]
-
                 if cached and cached.number and isOnValidWorldForNameChange() then
-                    -- Penting: pakai baseName yang baru dibaca dari player list world ini.
-                    -- Jangan gunakan cached.baseName karena warnanya mungkin dari world sebelumnya.
                     local color = tostring(cached.color or "`b")
                     local displayName = buildPlayerDisplayName(
                         baseName, cached.number, color, netid
                     )
-
-                    -- Kirim hanya jika nama saat ini memang berbeda dari nama target.
-                    -- Ini menghindari pengiriman OnNameChanged berulang yang bisa membebani game.
                     local currentClean = tostring(rawName):gsub("`.", "")
                     local targetClean = tostring(displayName):gsub("`.", "")
                     currentClean = currentClean:gsub("%s+", " "):match("^%s*(.-)%s*$") or currentClean
                     targetClean = targetClean:gsub("%s+", " "):match("^%s*(.-)%s*$") or targetClean
-
                     if currentClean ~= targetClean then
                         sendSpinNameOnce(displayName, netid)
                     end
@@ -2250,26 +1902,17 @@ local function applyCachedSpinNames()
             end
         end
     end
-
-
 end
-
--- Pulihkan label spin saat spawn maupun ketika console menandakan world baru dimasuki.
--- Satu thread saja yang aktif; percobaan dihentikan jika pemain keluar dari world.
 local function startSpinRestore()
     if spinRestoreThreadRunning then return end
-
     for netid in pairs(lastSpinDisplayByNetId) do
         lastSpinDisplayByNetId[netid] = nil
     end
-
     spinRestoreThreadRunning = true
     runThread(function()
         for attempt = 1, 12 do
             Sleep(500)
             if not checkworld() then
-                -- Jangan hentikan permanen jika event dipicu sebelum world siap.
-                -- Cukup lanjutkan percobaan terbatas.
             else
                 local players = GetPlayerListSafe()
                 if type(players) == "table" and next(players) ~= nil then
@@ -2280,47 +1923,31 @@ local function startSpinRestore()
         spinRestoreThreadRunning = false
     end)
 end
-
 local function calculate(expression)
     if type(expression) ~= "string" or expression == "" then
         return nil
     end
-
     expression = expression:gsub("%s+", "")
-
-    -- Hanya izinkan angka dan operator matematika.
     if expression:find("[^%d%.%+%-%*/%(%)%%%^]") then
         return nil
     end
-
-    -- Validasi format angka.
     for number in expression:gmatch("[%d%.]+") do
         local _, count = number:gsub("%.", "")
         if count > 1 then
             return nil
         end
     end
-
-    -- Pastikan ekspresi tidak kosong.
     if expression == "" then
         return nil
     end
-
-    -- Batasi ekspresi agar tidak terlalu panjang.
     if #expression > 200 then
         return nil
     end
-
-    -- Kompilasi ekspresi matematika.
     local fn = load("return " .. expression)
-
     if not fn then
         return nil
     end
-
-    -- Jalankan dengan perlindungan error.
     local success, result = pcall(fn)
-
     if success
         and type(result) == "number"
         and result == result
@@ -2328,20 +1955,14 @@ local function calculate(expression)
         and result ~= -math.huge then
         return result
     end
-
     return nil
 end
-
-
-
 local startupPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
 local startupName = (type(startupPlayer) == "table" and startupPlayer.name) or "Player"
 log("`9Hello, " .. tostring(startupName) .. " Welcome Back")
 Sleep(500)
 log("`bKamu Bermain Di `0Hari`9 "..hari.." `0Tanggal`c "..tanggal.." `0Bulan`c "..bulan.." `0 Tahun`9 "..tahun.."")
 log("`#Ketik /proxy untuk melihat command.")
-
-
 function openGazette()
     local currentPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
     local currentName = (type(currentPlayer) == "table" and currentPlayer.name) or "Player"
@@ -2408,12 +2029,6 @@ end_dialog|gazz|Close|Let's Go!|
     dialog(gazette)
 end
 openGazette()
-
-
--- =========================================================
--- KOU PROJECT AUTO SPAM TEXT
--- Uses the existing checkworld() and main hook(packetType, str, packet).
--- =========================================================
 local savedRandomColor = pref:get("spam_text_random_color", false)
 local spamText = {
     message = tostring(pref:get("spam_text_message", "Hello World!")),
@@ -2421,11 +2036,9 @@ local spamText = {
     randomColor = savedRandomColor == true or savedRandomColor == "1" or savedRandomColor == "true",
     running = false
 }
-
 local function openSpamTextDialog()
     local status = spamText.running and "`2RUNNING" or "`4STOPPED"
     local message = tostring(spamText.message or ""):gsub("[\r\n]", " "):gsub("|", "/")
-
     local d = [[
 set_default_color|`o
 add_label_with_icon|big|`bKou Project `w- Auto Spam Text|left|32|
@@ -2445,39 +2058,30 @@ end_dialog|spam_text_dialog|Close|
 ]]
     SendVariant({v1 = "OnDialogRequest", v2 = d})
 end
-
 local function handleSpamTextDialog(packet)
     if not packet:find("action|dialog_return", 1, true)
         or not packet:find("dialog_name|spam_text_dialog", 1, true) then
         return false
     end
-
     local fields = {}
     for line in packet:gmatch("[^\r\n]+") do
         local key, value = line:match("^([^|]+)|([^|]*)$")
         if key then fields[key] = value end
     end
-
-    -- Closing the dialog without clicking an action does not change the state.
     local message = fields.spam_text_message
     local interval = tonumber(fields.spam_text_interval)
     local enabled = fields.spam_text_enabled
     local randomColor = fields.spam_text_random_color
     local button = fields.buttonClicked
-
     if message ~= nil then
         spamText.message = message:gsub("[\r\n]", " ")
     end
     if interval then
         spamText.interval = math.max(1000, math.floor(interval))
     end
-
-    -- The checkbox is the Start/Stop control. Apply saves its current state.
     if button == "spam_text_save" or button == "Apply" then
         spamText.randomColor = randomColor == "1" or randomColor == "true"
-
         local requestedRunning = enabled == "1" or enabled == "true"
-
         if requestedRunning and not checkworld() then
             spamText.running = false
             log("`4[SpamText] `wMasuk world terlebih dahulu. Checklist dimatikan.")
@@ -2490,7 +2094,6 @@ local function handleSpamTextDialog(packet)
                 log("`4[SpamText] `wAuto Spam Text dihentikan.")
             end
         end
-
         local ok, err = pcall(function()
             pref:set("spam_text_message", spamText.message)
             pref:set("spam_text_interval", spamText.interval)
@@ -2505,18 +2108,12 @@ local function handleSpamTextDialog(packet)
     else
         return true
     end
-
     openSpamTextDialog()
     return true
 end
-
 local ameEnabled = false
-
 function hook(packetType, str, packet)
     str = tostring(str or "")
-
-    -- Extract only the chat text field; avoid gsub("^.*|", "") because
-    -- Lua's dot does not reliably parse multiline Growtopia packets.
     local chatInput = nil
     if str:find("action|input", 1, true) then
         chatInput = str:match("action|input\n|text|([^\r\n]*)")
@@ -2524,8 +2121,11 @@ function hook(packetType, str, packet)
             or str:match("action|input\ntext|([^\r\n]*)")
             or str:match("action|input\r\ntext|([^\r\n]*)")
     end
-
     local input = tostring(chatInput or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if packetType == 2 and str:find("buttonClicked|button_kou_project", 1, true) then
+dialog(mmenu)
+        return true
+    end
 
     local function cmd(command)
         local expected = tostring(command or ""):lower()
@@ -2534,48 +2134,35 @@ function hook(packetType, str, packet)
         end
         return input:sub(1, #expected + 1) == expected .. " "
     end
-
-    -- /ame toggles automatic /me formatting for ordinary chat messages.
     if cmd("/ame") then
         ameEnabled = not ameEnabled
         ontext("`9Auto /me : " .. (ameEnabled and "`2ON" or "`4OFF"))
         log("`9Auto /me : " .. (ameEnabled and "`2ON" or "`4OFF"))
         return true
     end
-
-    -- Prefix regular chat with /me while enabled. Slash commands are left alone.
-    -- The replacement starts with /me, so it won't be prefixed recursively.
     if ameEnabled and chatInput and input ~= "" and input:sub(1, 1) ~= "/" then
         SendPacket(2, "action|input\n|text|/me " .. chatInput)
         return true
     end
-
--- Auto Spam Text command: parse the chat text field directly because it follows a newline.
-
 if cmd("/spam") then
     openSpamTextDialog()
     return true
 end
-
 if handleSpamTextDialog(str) then
     return true
 end
-
 if cmd("/option") then
     openChecklist()
     return true
 end
-
 if str:find("action|dialog_return", 1, true)
     and str:find("dialog_name|checklist_dialog", 1, true) then
     return processChecklistReturn(str)
 end
-
 if cmd("/proxy") or input == "cmd" then
     openGazette()
     return true
 end
-
 function weather()
 weatherid = [[
 set_default_color|`o
@@ -2640,9 +2227,7 @@ end_dialog|weather_visual|||
 dialog(weatherid)
 return true
 end
-
-if str:find("action|friends\ndelay") or str:find("buttonClicked|bk0") or str == ("action|dialog_return\ndialog_name|socialportal\n") then
-    mmenu = [[
+mmenu = [[
 set_default_color|`o
 set_bg_color|10, 10, 10, 180|
 set_border_color|180, 180, 180, 180|
@@ -2667,20 +2252,17 @@ add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
 end_dialog|k||Back|
 ]]
+if str:find("action|friends\ndelay") or str:find("buttonClicked|bk0") or str == ("action|dialog_return\ndialog_name|socialportal\n") then
     dialog(mmenu)
     return true
 end
-
     if cmd("/logs") or str:find("buttonClicked|open_logs") then
         show_logs_menu()
         return true
     end
-
 local spin_search = ""
-
 function show_spin_logs(query)
     spin_search = query or ""
-
     local d = "set_default_color|`o\n"
     d = d .. "set_bg_color|10, 10, 10, 180\n"
     d = d .. "set_border_color|180, 180, 180, 180\n"
@@ -2688,35 +2270,24 @@ function show_spin_logs(query)
     d = d .. "add_text_input|spin_search|Search Logs:|" .. spin_search .. "|30|\n"
     d = d .. "add_button|btn_search_spin|Search|\n"
     d = d .. "add_spacer|small|\n"
-
     local found = false
-
     for _, v in ipairs(spin_logs) do
         local log = tostring(v)
-
         if spin_search == ""
             or log:lower():find(spin_search:lower(), 1, true) then
-
             log = log:gsub("^(%S+)", "`2%1`o", 1)
-
             d = d .. "add_textbox|" .. log .. "|left|\n"
             found = true
         end
     end
-
     if not found then
         d = d .. "add_textbox|`4No logs found.|left|\n"
     end
-
     d = d .. "add_spacer|small|\n"
     d = d .. "add_button|back_to_logs|`wBack to Menu|\n"
     d = d .. "end_dialog|spin_logs_view|Close||\n"
-
     dialog(d)
 end
-
--- Handle log-menu buttons even if Growlauncher formats dialog_return
--- without the expected dialog_name field/order.
 if str:find("buttonClicked|btn_world_logs", 1, true) then
     show_world_logs()
     return true
@@ -2724,47 +2295,37 @@ elseif str:find("buttonClicked|btn_spin_logs", 1, true) then
     show_spin_logs("")
     return true
 end
-
 if str:find("action|dialog_return", 1, true)
     and (str:find("dialog_name|logs_view", 1, true) or str:find("dialog_name|spin_logs_view", 1, true)) then
-
     local button = str:match("buttonClicked|([^\r\n]*)")
-
     if button == "btn_search_spin" then
         local query = str:match("\nspin_search|([^\r\n]*)") or ""
         show_spin_logs(query)
         return true
-
     elseif button == "btn_search_world_player" then
         local query = str:match("\nworld_player_search|([^\r\n]*)") or ""
         world_logs_search = query
         show_world_logs(query)
         return true
-
     elseif button == "btn_clear_world_logs" then
         world_logs = {}
         show_world_logs("")
         return true
-
     elseif button == "btn_world_logs_back" then
         world_logs_search = ""
         show_logs_menu()
         return true
-
     elseif button == "back_to_logs" then
         show_logs_menu()
         return true
     end
 end
-
     if str:find("dialog_name|logs_view") and str:find("buttonClicked|back_to_logs") then
         show_logs_menu()
         return true
     end
-
 if cmd("/relog") then
     local wname = GetWorldName()
-
     if wname and wname ~= "" and wname ~= "EXIT" then
         relogWorld = wname
         relogPending = true
@@ -2772,23 +2333,18 @@ if cmd("/relog") then
     else
         ontext("`4You are not currently in a world.")
     end
-
     return true
 end
-
 if relogPending and str:find("action|quit_to_exit", 1, true) then
         return false
     end
-
 if cmd("/rejoin") then
 SendPacket(3,"action|join_request\nname|"..GetWorldName())
 log("`2Rejoin world successfully.")
 return true
 end
-
 if str:find("buttonClicked|btn_kou", 1, true) then
     local url = "wa.me/+6283844384411"
-
     if type(openURL) == "function" then
         openURL(url)
     elseif type(OpenURL) == "function" then
@@ -2796,55 +2352,42 @@ if str:find("buttonClicked|btn_kou", 1, true) then
     else
         log("`4API openURL tidak ditemukan di Growlauncher.")
     end
-
     return true
 end
-
 if str:find("buttonClicked|btkbutton") then
 btk()
 return true
 end
-
 if str:find("buttonClicked|spammode") then
 openSpamTextDialog()
 return true
 end
-
     if str:find("buttonClicked|Save", 1, true) then
-
         blink_color = getCheckbox(
             str,
             "blink_color",
             blink_color
         )
-
         pref:set("blink_color", blink_color)
         pref:save()
         applyChecklistBlink()
-
         log("`2Checklist Saved")
-
         return true
     end
-
 if str:find("buttonClicked|friends") then
 SendPacket(2,"action|friends\ndelay|0\n")
 return true
 end
-
 if str:find("buttonClicked|weatherr") or cmd("/weatherid") then
 weather()
 return true
 end
-
 if str:find("buttonClicked|visual_gems_mode") then
 visual_gems_mode = not visual_gems_mode
 ontext("`9Visual Gems Mode : " .. (visual_gems_mode and "`2ON" or "`4OFF"))
 return true
 end
-
 local weatherChoice = str:match("buttonClicked|weather_(%d+)")
-
 if weatherChoice then
     weatherChoice = tonumber(weatherChoice)
     if weatherChoice >= 1 and weatherChoice <= 40 then
@@ -2855,43 +2398,36 @@ if weatherChoice then
         return true
     end
 end
-
 if str:find("buttonClicked|mod_menu") or cmd("/modmenu") then
 checklist()
 return true
 end
-
 if str:find("buttonClicked|scan_floating") or cmd("/scan") then
     kou_floating_search = ""
     kouFloatingDialog()
     return true
 end
-
 if str:find("dialog_name|kou_floating_dialog") then
     if str:find("buttonClicked|kou_float_search_btn") then
         kou_floating_search = str:match("kou_float_search|([^\n]*)") or ""
         kouFloatingDialog()
         return true
     end
-
     if str:find("buttonClicked|kou_float_clear_btn") then
         kou_floating_search = ""
         kouFloatingDialog()
         return true
     end
-
     if str:find("buttonClicked|kou_float_refresh") then
         kouFloatingDialog()
         return true
     end
-
     local index = str:match("buttonClicked|kou_float_(%d+)")
     if index then
         kouFloatingTeleport(index)
         return true
     end
 end
-
 if str:find("buttonClicked|posplayer1") then
 player1loc = true
 log("`9Please Punch Display")
@@ -2914,7 +2450,6 @@ log("`9Please Punch Display")
 ontext("`9Please Punch Display")
 return true
 end
-
 if str:find("buttonClicked|gemsright1") then
 gemsright1 = true
 log("`9Please Punch Chand")
@@ -2956,7 +2491,6 @@ log("`9Please Punch Chand")
 ontext("`9Please Punch Chand")
 return true
 end
-
 if str:find("buttonClicked|gemsleft1") then
 gemsleft1 = true
 log("`9Please Punch Chand")
@@ -3003,25 +2537,21 @@ log("`9Punch Position Back")
 ontext("`9Punch Position Back")
 return true
 end
-
 if cmd("/checktile") then
 checktile = not checktile
 ontext("`2Checktile: " .. (checktile and "`2ON" or "`4OFF"))
 log("`2Checktile: " .. (checktile and "`2ON" or "`4OFF"))
 return true
 end
-
 if str:find("buttonClicked|fcbgl") or cmd("/cv") then
 toggleAutoConvert()
 return true
 end
-
 if str:find("buttonClicked|auto_crime") or cmd("/crime") then
 autocrime = not autocrime
 ontext("`2Auto Crime: " .. (autocrime and "`2ON" or "`4OFF"))
 return true
 end
-
      if string.match(input, "/arroz (%d+)") then
 jumlah = string.match(input, "/arroz (%d+)")
 dropItem(4604,jumlah)
@@ -3029,7 +2559,6 @@ ontalk("`2Succesfully Drop `0"..jumlah.." `9Arroz!")
 log("`2Succesfully Drop `0"..jumlah.." `9Arroz!")
 return true
 end
-
 local amount = input:match("^/arroz%d+ (%d+)$")
 if amount then
     if input:match("^/arroz1 ") then
@@ -3043,7 +2572,6 @@ if amount then
     end
     return true
 end
-
 if string.match(input, "/dd (%d+)") then
 local amount = string.match(input, "/dd (%d+)")
 local cur_dl, cur_bgl = inv(1796), inv(7188)
@@ -3066,7 +2594,6 @@ ontalk("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
 log("`2Dropped: `9" .. b_drop .. " BGL  `9" .. d_drop .. " DL  `90 WL")
 return true
 end
-
 if string.match(input, "^/db (%d+)$") then
     local jumlah = tonumber(string.match(input, "^/db (%d+)$"))
     if jumlah > 0 then
@@ -3076,7 +2603,6 @@ if string.match(input, "^/db (%d+)$") then
     end
     return true
 end
-
 if string.match(input, "/cd (%d+)") then
 local target = string.match(input, "/cd (%d+)")
 local b_drop = math.floor(target / 10000)
@@ -3105,13 +2631,11 @@ if w_drop > 0 then autodrop(242, w_drop) end
     ontalk(result)
 return true
 end
-
 if cmd("/bal") then
 local hailto = inv(242) + (inv(1796) * 100) + (inv(7188) * 10000)
 log("`2Balance: `9"..hailto.."`2 WL (`9"..inv(7188).." `2BGL, `9"..inv(1796).." `2DL, `9"..inv(242).." `2WL).")
 return true
 end
-
 if cmd("/daw") then
         local wl, dl, bgl = inv(242), inv(1796), inv(7188)
         if wl > 0 then autodrop(242, wl) end
@@ -3119,7 +2643,6 @@ if cmd("/daw") then
         if bgl > 0 then autodrop(7188, bgl) end
 return true
 end
-
         if cmd("/gemsrepeat") or str:find("buttonClicked|gems_repeat") then
         gemsrepeat = not gemsrepeat
         ontext("`2Gems Repeat : " .. (gemsrepeat and "`2ON" or "`4OFF"))
@@ -3128,18 +2651,15 @@ repeatgems()
 end)
         return true
     end
-
     if auto_bgl_mode then
     toggleAutoConvert()
     end
-
 if cmd("/res") then
 growtopia.notify("`2Respawn Succesful.")
 log("`2Respawn Succesful.")
 SendPacket(2,"action|respawn")
 return true
 end
-
     if cmd("/reme") then
         Config.gameMode = "reme"
         log("Mode: REME")
@@ -3158,20 +2678,17 @@ end
         ontext("Mode: LEWA")
         return true
     end
-
      if cmd("/zzz") then
 SendPacket(2,"action|input\n|text|Collected `2+"..cg.." Gems")
 log("`9Gems `7Lu `#"..cg.."`7 y")
 cg = 0
 return false
 end
-
      if cmd("/tb") then
      log("Block has been Taked")
      takeblock()
      return true
      end
-
 if string.match(input, "/tp (%d+) (%d+)") then
 local x = string.match(input, "/tp (%d+)")
 local y = string.match(input, "/tp "..x.." (%d+)")
@@ -3180,14 +2697,12 @@ ontalk("`2Succesfully teleport to Pos `0"..x.." "..y.."!")
 log("`2Succesfully teleport to Pos `0"..x.." "..y.."!")
 return true
 end
-
 if cmd("/setup") or str:find("buttonClicked|setupbtkk")then
 btk()
 kou()
 log("`2Opening setup BTK")
 return true
 end
-
     if str:find([[
 action|dialog_return
 dialog_name|setupcoy
@@ -3197,7 +2712,6 @@ ontalk("`4Tax Set To : `9"..taxset.."")
 log("`4Tax Set To : `9"..taxset.."")
 return true
   end
-
 if str:find("/settax (%d+%.?%d*)") then
     taxset = tonumber(str:match("/settax (%d+%.?%d*)"))
     if taxset and taxset >= 0 and taxset <= 100 then
@@ -3207,16 +2721,11 @@ if str:find("/settax (%d+%.?%d*)") then
     end
     return true
 end
-
     if cmd("/acc") then
         auto_accept_mode = not auto_accept_mode
         ontext("`2Auto Accept Access Mode: " .. (auto_accept_mode and "`2ON" or "`4OFF"))
         return true
     end
-    
-
-
-
     if cmd("/wr 0") then
         pull = false
         kick = false
@@ -3224,7 +2733,6 @@ end
         ontext("`9Wrench Mode : Normal")
         log("`9Wrench Mode : Normal")
         return true
-
     elseif cmd("/wr 1") then
         pull = true
         kick = false
@@ -3232,7 +2740,6 @@ end
         ontext("`9Wrench Mode : `cPull")
         log("`9Wrench Mode : `cPull")
         return true
-
     elseif cmd("/wr 2") then
         pull = false
         kick = true
@@ -3240,7 +2747,6 @@ end
         ontext("`9Wrench Mode : `cKick")
         log("`9Wrench Mode : `cKick")
         return true
-
     elseif cmd("/wr 3") then
         pull = false
         kick = false
@@ -3249,20 +2755,16 @@ end
         log("`9Wrench Mode : `4Ban")
         return true
     end
-
     local netid0 = str:match("^action|wrench\n|netid|(%d+)")
     if not netid0 then
         return false
     end
-
     netid0 = tonumber(netid0)
     if not netid0 then
         return false
     end
-
     local action
     local message
-
     if pull then
         action = "pull"
         message = "`9Pull "
@@ -3275,7 +2777,6 @@ end
     else
         return false
     end
-
     for _, plr in pairs(GetPlayerList()) do
         if tonumber(plr.netID) == netid0 then
             SendPacket(
@@ -3285,17 +2786,10 @@ end
                     .. "|\nbuttonClicked|"
                     .. action
             )
-
             ontext(message .. plr.name)
             return true
         end
     end
-
-    
-
-
-
-    
     if cmd("/pullall") then
     local action = "pull"
     local message = "`9Pulling `wAll Player Target : "..count
@@ -3309,15 +2803,12 @@ end
             ontext("`4Kamu harus berada di world!")
             return true
         end
-
         local localPlayer = GetLocal()
         local localNetID = localPlayer and tonumber(localPlayer.netID)
         local players = GetPlayerList()
         local count = 0
-
         for _, plr in pairs(players) do
             local netid = plr and tonumber(plr.netID)
-
             if netid and netid ~= localNetID then
                 SendPacket(
                 2,
@@ -3326,24 +2817,20 @@ end
                     .. "|\nbuttonClicked|"
                     .. action
             )
-
                 count = count + 1
                 Sleep(100)
             end
         end
-
         ontext(message)
         log(message)
         return true
     end
-
   if cmd("/gems") then
   punchgems = not punchgems
   ontext("`2PunchGems: " .. (punchgems and "`2ON" or "`4OFF"))
   log("`2PunchGems: " .. (punchgems and "`2ON" or "`4OFF"))
   return true
   end
-
 if cmd("/pos1") then
 player1x = math.floor(GetLocal().posX / 32)
 player1y = math.floor(GetLocal().posY / 32)
@@ -3372,7 +2859,6 @@ ontext("Pos player 4 Saved")
 greenbox(player4x, player4y)
 return true
 end
-
 if cmd("/remove1") then
 player1x = nil
 player1y = nil
@@ -3397,14 +2883,11 @@ player4y = nil
 ontext("Pos player 4 Removed")
 return true
 end
-
--- /removeweather, /weather remove, atau /weather reset menghapus visual override.
 if cmd("/removeweather") or cmd("/weather remove") or cmd("/weather reset") then
     removeVisualWeather()
     log("`2Visual weather dikembalikan ke default.")
     return true
 end
-
 if string.match(input, "^/weather (%d+)$") then
     local id = tonumber(string.match(input, "^/weather (%d+)$"))
     if id and id >= 1 and id <= 40 then
@@ -3418,7 +2901,6 @@ if string.match(input, "^/weather (%d+)$") then
     end
     return true
 end
-
 if cmd("/blink") then
     checklist.blinkMode = not checklist.blinkMode
     pref:set("checklist_blinkMode", checklist.blinkMode)
@@ -3438,24 +2920,19 @@ end
         log("`w[ BET1 ] : `9" .. Aount .. " WL\n`w[ BET2 ] : `9" .. Aount .. " WL\n`w[ TOTAL ] : `9" .. total_picked .. " WL\n`w [ PAYOUT ] : `9" .. payout_after_tax .. " WL\n`4 [ TAX ] : `9" .. tax_deduction .. " WL")
         return true
     end
-
 if str:find("/calc ", 1, true) then
     local expression = str:match("/calc%s+(.+)")
-
     if expression then
         local result = calculate(expression)
-
         if result ~= nil then
             ontext(
                 "`w" .. expression ..
                 " `2= `w" .. tostring(result)
             )
-
             ontalk(
                 "`w" .. expression ..
                 " `2= `w" .. tostring(result)
             )
-
             log(
                 "`2Calculator: `w" .. expression ..
                 " `2= `w" .. tostring(result)
@@ -3466,46 +2943,37 @@ if str:find("/calc ", 1, true) then
     else
         ontext("`4Usage: /calc 10+20+30")
     end
-
     return true
 end
-
 if cmd("/tp") then
 take()
 return true
 end
-
 if cmd("/dt") then
 droptax()
 return true
 end
-
 if cmd("/radar") then
 showRadar()
 return true
 end
-
     if cmd("/w1") then execute_payout(1); return true end
     if cmd("/w2") then execute_payout(2); return true end
     if cmd("/w3") then execute_payout(3); return true end
     if cmd("/w4") then execute_payout(4); return true end
     if cmd("/gd") then execute_payout(5); return true end
-
     if cmd("/ame") then
         auto_me_mode = not auto_me_mode
         ontext("`2Auto /me Mode: " .. (auto_me_mode and "`2ON" or "`4OFF"))
         return true
     end
-    
     if auto_me_mode and type(str) == "string" then
     local chat_msg = str:match("action|input\n|text|([^\n]*)")
-
     if chat_msg and chat_msg ~= "" and chat_msg:sub(1, 1) ~= "/" then
         SendPacket(2, "action|input\n|text|/me " .. chat_msg)
         return true
     end
 end
-
 if string.match(input, "/drop (%d+) (%d+)") then
 local id = string.match(input, "/drop (%d+)")
 local amount = string.match(input, "/drop "..id.." (%d+)")
@@ -3520,11 +2988,9 @@ local amount = string.match(input, "/drop "..id.." (%d+)")
             x = posX,
             y = posY
         })
-
 end
         return true
     end
-
     if auto_me_mode and str:find("action|input\n|text|") then
         local chat_msg = str:match("text|(.*)")
         if chat_msg and chat_msg:sub(1,1) ~= "/" then
@@ -3532,78 +2998,59 @@ end
             return true
         end
     end
-
 if string.match(input, "^/split%s+(%d+)$") then
     local pct = tonumber(string.match(input, "^/split%s+(%d+)$"))
     pct = math.max(0, math.min(100, pct))
-
     local wl = inv(242) or 0
     local dl = inv(1796) or 0
     local bgl = inv(7188) or 0
-
     local total_wl = wl + (dl * 100) + (bgl * 10000)
     local target = math.floor(total_wl * pct / 100)
-
     if target <= 0 then
         ontext("`4Nothing to drop.")
         return true
     end
-
     local b_drop = math.min(math.floor(target / 10000), bgl)
     local rem = target - (b_drop * 10000)
-
     local d_drop = math.min(math.floor(rem / 100), dl)
     rem = rem - (d_drop * 100)
-
     local w_drop = math.min(rem, wl)
-
     local actual = (b_drop * 10000) + (d_drop * 100) + w_drop
-
     if actual <= 0 then
         ontext("`4Tidak ada item yang dapat di-drop.")
         return true
     end
-
     if b_drop > 0 then
         autodrop(7188, b_drop)
     end
-
     if d_drop > 0 then
         autodrop(1796, d_drop)
     end
-
     if w_drop > 0 then
         autodrop(242, w_drop)
     end
-
     ontext(
         "`2Dropped: "
         .. "`9" .. b_drop .. " BGL  "
         .. "`9" .. d_drop .. " DL  "
         .. "`9" .. w_drop .. " WL"
     )
-
     return true
 end
-
 return false
 end
-
+local telephoneListInjecting = false
+local wrenchButtonInjecting = false
 function var(var)
-
-
     if type(var) ~= "table" then
         return false
     end
-    
     var.v1 = tostring(var.v1 or "")
         if auto_accept_hide_ticks > 0 and var.v1:find("OnDialogRequest") then
         if var.v2:find("acceptlock") or var.v2:find("acceptaccess") then
-            return true 
+            return true
         end
     end
-
-    -- Trigger auto-accept
     if auto_accept_mode and var.v1:find("OnConsoleMessage") and var.v2:find("wants to add you to a") then
         local my_netid = tonumber(GetLocal().netid) or tonumber(GetLocal().netID) or 0
         SendPacket(2, "action|wrench\n|netid|" .. my_netid)
@@ -3612,8 +3059,6 @@ function var(var)
         auto_accept_hide_ticks = 10
         ontext("`2ACCESS GRANTED")
     end
-    
-    
     if var.v1 == "OnDialogRequest" and type(var.v2) == "string" then
         local d = var.v2
         if d:find("drop", 1, true) and (d:find("242", 1, true) or d:find("1796", 1, true) or d:find("7188", 1, true) or d:find("4604", 1, true)) then
@@ -3622,42 +3067,100 @@ function var(var)
     end
     if var.v1 == "OnSpawn" then
         startSpinRestore()
-        -- Terapkan langsung saat spawn supaya visual weather tetap sama setelah re-enter.
         applySavedVisualWeather()
     end
-
-    -- OnSpawn tidak selalu cukup untuk mendeteksi re-enter/ganti world.
     if var.v1 == "OnConsoleMessage" then
         local consoleText = tostring(var.v2 or ""):lower()
         if consoleText:find("entering", 1, true)
             or consoleText:find("joined", 1, true)
             or consoleText:find("entered", 1, true) then
             startSpinRestore()
-            -- Tidak memakai Sleep; mencoba menerapkan weather langsung pada event masuk world.
             applySavedVisualWeather()
         end
     end
+if var.v1 == "OnDialogRequest" and type(var.v2) == "string"
+    and var.v2:find("end_dialog|phonecall", 1, true)
+    and not (Config and Config.autoConvert)
+    and not telephoneListInjecting then
+    local dialog = var.v2
+    if not dialog:find("Telephone Number List", 1, true) then
+        local telephoneList = [[
+set_bg_color|10, 10, 10, 180|
+set_border_color|180, 180, 180, 180|
+add_spacer|small|
+add_smalltext|`9Telephone Number List:|
+add_smalltext|`w77777 `9- `wNobody|
+add_smalltext|`w12345 `9- `wCrazy Jim|
+add_smalltext|`w00000 `9- `wOperator|
+add_smalltext|`w41100 - 41199 `9- `wWarehouse / Mystery Voice|
+add_smalltext|`w90210 `9- `wBeverly Hills|
+add_smalltext|`w53785 `9- `wSales-Man|
+add_smalltext|`w02893 `9- `wGrowTech Pharma|
+add_smalltext|`w30912 `9- `wGrowtopizza|
+add_smalltext|`w52368 `9- `wRemove Ghost|
+]]
+        local updatedDialog = dialog:gsub(
+            "end_dialog|phonecall",
+            telephoneList .. "end_dialog|phonecall",
+            1
+        )
+        if updatedDialog ~= dialog and type(SendVariant) == "function" then
+            telephoneListInjecting = true
+            SendVariant({v1 = "OnDialogRequest", v2 = updatedDialog})
+            telephoneListInjecting = false
+            return true
+        end
+    end
+end
+-- Add a new button after World Lock Bank without removing original dialog content.
+if var.v1 == "OnDialogRequest"
+    and type(var.v2) == "string"
+    and var.v2:find("open_worldlock_storage", 1, true)
+    and not var.v2:find("button_kou_project", 1, true)
+    and not wrenchButtonInjecting then
+
+    local originalDialog = var.v2
+    local newButton = "\nset_bg_color|10, 10, 10, 180|\nset_bg_color|10, 10, 10, 180|\nadd_custom_button|button_kou_project|image:/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/buttonmenu.rttex;image_size:400,260;width:0.19;|\n"
+    local colorbg = "set_bg_color|10, 10, 10, 180|"
+    local markerStart = originalDialog:find(marker, 1, true)
+
+    if markerStart then
+        local lineEnd = originalDialog:find("\n", markerStart, true)
+        if lineEnd then
+            local insertAt = lineEnd + 1
+            local updatedDialog = originalDialog:sub(1, insertAt - 1)
+                .. newButton
+                .. originalDialog:sub(insertAt)
+
+            if type(SendVariant) == "function" then
+                wrenchButtonInjecting = true
+                local ok, err = pcall(function()
+                    SendVariant({v1 = "OnDialogRequest", v2 = updatedDialog})
+                end)
+                wrenchButtonInjecting = false
+                if ok then return true end
+                log("`4[WrenchMenu] Injection error: " .. tostring(err))
+            end
+        else
+            log("`4[WrenchMenu] World Lock Bank line ending not found.")
+        end
+    end
+end
 
 if Config and Config.autoConvert then
     local payload = type(var.v2) == "string" and var.v2 or ""
-
     if payload:find("Wow, that's fast delivery.", 1, true) then
         Config.autoConvertStep = 1
         return true
     end
-
     if var.v1 == "OnDialogRequest"
     and payload:find("Telephone", 1, true) then
-
         local x = payload:match("tilex|(%d+)")
         local y = payload:match("tiley|(%d+)")
-
         if x then Config.autoConvertX = tonumber(x) end
         if y then Config.autoConvertY = tonumber(y) end
-
         local tx = tonumber(Config.autoConvertX)
         local ty = tonumber(Config.autoConvertY)
-
         if tx and ty then
             if Config.autoConvertStep == 1 then
                 SendPacket(2,
@@ -3668,9 +3171,7 @@ if Config and Config.autoConvert then
                     "num|53785\n" ..
                     "buttonClicked|chc5"
                 )
-
                 Config.autoConvertStep = 2
-
             elseif Config.autoConvertStep == 2 then
                 SendPacket(2,
                     "action|dialog_return\n" ..
@@ -3680,81 +3181,60 @@ if Config and Config.autoConvert then
                     "num|-34\n" ..
                     "buttonClicked|chc0"
                 )
-
                 Config.autoConvertStep = 1
             end
         end
-
-        -- Hanya sembunyikan dialog Telephone.
         return true
     end
 end
-
     if var.v1 == "OnConsoleMessage" then
         local msg = tostring(var.v2 or "")
-
         if msg:match("Collected `w(%d+) World Lock``") then
             wear(242)
             return true
         end
     end
-
    if var.v1 == "OnConsoleMessage" and tostring(var.v2 or ""):find("list of valid", 1, true) then
 log("`4Gada Command Begitu Njing")
 return true
 end
-
    if var.v1 == "OnConsoleMessage" and tostring(var.v2 or ""):find("World Locked", 1, true) then
 log("\n`#Balance\n`9World Locks : `2"..inv(242).."\n`1Diamond Locks : `2"..inv(1796).."\n`eBlue Gem Locks : `2"..inv(7188).."\n`9Gems : `2"..getGems().."`0")
 return true
 end
-
    if var.v1 == "OnConsoleMessage" and tostring(var.v2 or ""):find("powerhelp", 1, true) then
 log("`4/proxy For menu")
 return true
 end
-
    if var.v1 == "OnConsoleMessage" and tostring(var.v2 or ""):find("World Locked", 1, true) then
 log("\n`#Balance\n`9World Locks : `2"..inv(242).."\n`1Diamond Locks : `2"..inv(1796).."\n`eBlue Gem Locks : `2"..inv(7188).."\n`9Gems : `2"..getGems().."`0")
 return true
 end
-
    if var.v1 == "OnConsoleMessage" and tostring(var.v2 or ""):find("Where would", 1, true) then
 log("\n`#Balance\n`9World Locks : `2"..inv(242).."\n`1Diamond Locks : `2"..inv(1796).."\n`eBlue Gem Locks : `2"..inv(7188).."\n`9Gems : `2"..getGems().."`0")
 return true
 end
-
 if var.v1 == "OnTalkBubble" and var.v3 and checkworld() then
     local msg = tostring(var.v3)
-
     if msg:find("spun the wheel and got", 1, true) then
         uidplayer = tonumber(var.v2)
         spintext = msg
-
         local clean = msg:gsub("`.", "")
         local num = tonumber(clean:match("got.-(%d+)"))
         local isFakeSpin = msg:find("OID:", 1, true) ~= nil
             or (msg:find("<", 1, true) ~= nil and msg:find(">", 1, true) ~= nil)
-
         if isFakeSpin then
-            -- Tandai fake spin seperti fitur message.lua.
             local fakeChat = msg:match("player_chat=(.+)") or msg
             var.v3 = "`7[`4FAKE``] " .. fakeChat
         elseif num then
             spinNumberColor = msg:match("got.-(`.)%d+") or "`b"
-
-            -- Tambahkan angka spin di samping nama player untuk semua mode.
             local playerName = spinNameOriginals[uidplayer] or getPlayerName(uidplayer)
             if playerName and playerName ~= "" then
-                -- Simpan nama dasar dan pertahankan saat keluar/masuk world.
                 if spinNameOriginals[uidplayer] == nil then
                     spinNameOriginals[uidplayer] = playerName:gsub("%s+`7%[.*%]$", "")
                 end
                 playerName = spinNameOriginals[uidplayer]
-                -- Simpan hasil spin terakhir berdasarkan nama dasar, bukan hanya NetID.
-                -- NetID dapat berubah ketika keluar lalu masuk world lain.
                 spinNumbersByName[normalizeSpinName(playerName)] = {
-                    -- Simpan untuk referensi saja; pemulihan warna memakai player list world saat ini.
                     baseName = getCleanName(playerName),
                     number = tostring(num),
                     color = spinNumberColor
@@ -3764,8 +3244,6 @@ if var.v1 == "OnTalkBubble" and var.v3 and checkworld() then
                 )
                 sendSpinNameOnce(nameWithSpin, uidplayer)
             end
-
-            -- Pertahankan tampilan Number Only dan Fast Wheel.
             if Config.gameMode == "number_only" or Config.gameMode == "number" then
                 var.v3 = "`w[ `2REAL`w ] " .. spinNumberColor .. tostring(num)
             else
@@ -3775,14 +3253,11 @@ if var.v1 == "OnTalkBubble" and var.v3 and checkworld() then
         return true
     end
 end
-
 if var.v1 == "OnConsoleMessage" and var.v2 then
     local console_msg = tostring(var.v2)
     local isFakeSpin = console_msg:find("OID:", 1, true) ~= nil
         or (console_msg:find("<", 1, true) ~= nil and console_msg:find(">", 1, true) ~= nil)
-
     if console_msg:find("spun the wheel and got", 1, true) then
-
         local text_to_check = spintext or console_msg
         local clean_text = text_to_check:gsub("`.", "")
         local num = tonumber(clean_text:match("got.-(%d+)"))
@@ -3791,22 +3266,18 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
             or clean_text:match("^(.-)%s+spun the wheel and got")
             or "Unknown Player"
         local spin_log_result = number_color .. tostring(num or "")
-
         if not num then
             spintext = nil
             spinNumberColor = nil
             uidplayer = nil
             return false
         end
-
         local localPlayer = (type(GetLocal) == "function" and GetLocal()) or nil
         local target_uid = uidplayer
             or (type(localPlayer) == "table" and tonumber(localPlayer.netid))
             or (type(localPlayer) == "table" and tonumber(localPlayer.netID))
             or -1
-
         local timestamp = os.date("%H:%M:%S")
-
         if Config.gameMode == "number_only" then
             if isFakeSpin then
                 if target_uid ~= -1 then
@@ -3818,7 +3289,6 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
                         v5 = 0
                     })
                 end
-
                 SendVariant({
                     v1 = "OnConsoleMessage",
                     v2 = "`w[ `4FAKE`w ] " .. number_color .. tostring(num)
@@ -3833,25 +3303,21 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
                         v5 = 0
                     })
                 end
-
                 SendVariant({
                     v1 = "OnConsoleMessage",
                     v2 = "`w[ `^REAL`w ] " .. number_color .. tostring(num)
                 })
             end
-
             add_log(
                 spin_logs,
                 "`w[ `4" .. timestamp .. " `w] " .. spin_log_name
                     .. " `wspun the wheel and got `w" .. spin_log_result
             )
-
             spintext = nil
             spinNumberColor = nil
             uidplayer = nil
             return true
         end
-
                 if Config.gameMode == "number" then
             if isFakeSpin then
                 if target_uid ~= -1 then
@@ -3863,7 +3329,6 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
                         v5 = 0
                     })
                 end
-
                 SendVariant({
                     v1 = "OnConsoleMessage",
                     v2 = "`w[ `4FAKE`w ] `w" .. console_msg
@@ -3878,30 +3343,24 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
                         v5 = 0
                     })
                 end
-
                 SendVariant({
                     v1 = "OnConsoleMessage",
                     v2 = "`w[ `^REAL`w ] `w" .. console_msg
                 })
             end
-
             add_log(
                 spin_logs,
                 "`w[ `4" .. timestamp .. " `w] " .. spin_log_name
                     .. " `wspun the wheel and got `w" .. spin_log_result
             )
-
             spintext = nil
             uidplayer = nil
             return true
         end
-
         local logic = ""
         local point
-
         if Config.gameMode == "reme" then
             point = (math.floor(num / 10) + (num % 10)) % 10
-
             if point == 0 then
                 logic = " `w[ `^REME : `b" .. point .. " `2X3!`w ]"
             elseif point == 1 then
@@ -3909,10 +3368,8 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
             else
                 logic = " `w[ `^REME : `b" .. point .. "`w ]"
             end
-
         elseif Config.gameMode == "leme" then
             point = (math.floor(num / 10) + (num % 10)) % 10
-
             if point == 1 then
                 logic = " `w[ `^LEME : `b" .. point .. " `2X3!`w ]"
             elseif point == 0 then
@@ -3922,14 +3379,11 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
             else
                 logic = " `w[ `^LEME : `b" .. point .. "`w ]"
             end
-
         elseif Config.gameMode == "lewa" then
             point = num % 10
-
             if num == 0 then
                 point = 1
             end
-
             if point == 0 then
                 logic = " `w[ `^LEWA : `b" .. point .. " `2X7!`w ]"
             elseif point == 9 then
@@ -3940,7 +3394,6 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
                 logic = " `w[ `^LEWA : `b" .. point .. "`w ]"
             end
         end
-
         if isFakeSpin then
             if target_uid ~= -1 then
                 SendVariant({
@@ -3951,7 +3404,6 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
                     v5 = 0
                 })
             end
-
             SendVariant({
                 v1 = "OnConsoleMessage",
                 v2 = "`w[ `4FAKE`w ] `w" .. console_msg .. logic
@@ -3966,28 +3418,23 @@ if var.v1 == "OnConsoleMessage" and var.v2 then
                     v5 = 0
                 })
             end
-
             SendVariant({
                 v1 = "OnConsoleMessage",
                 v2 = "`w[ `^REAL`w ] `w" .. console_msg .. logic
             })
         end
-
         add_log(
             spin_logs,
             "`w[ `4" .. timestamp .. " `w] " .. spin_log_name
                 .. " `wspun the wheel and got `w" .. spin_log_result .. logic
         )
-
         spintext = nil
         uidplayer = nil
         return true
     end
-
     LogToConsole("" .. systemlog .. " " .. console_msg)
     return true
 end
-
 if autocrime then
     local crimeItemNames = {
         [2292] = "Superpower - Heat Vision",
@@ -4010,40 +3457,29 @@ if autocrime then
         [2336] = "Superpower - Overcharge",
         [2338] = "Superpower - Megawatt Pulse"
     }
-
     local function logCrimeItem(itemID)
         local itemName = crimeItemNames[tonumber(itemID)] or "Unknown Item"
         ontext("`2[Crime] `wMenggunakan: `9" .. itemName)
     end
-
     if var.v1 == "OnDialogRequest" and type(var.v2) == "string" then
         local dialog = var.v2
-
-        -- Proses hanya dialog yang berkaitan dengan Crime.
-        -- Dialog lain, seperti Drop dan Profile, dibiarkan terbuka.
         local isCrimeDialog =
             dialog:find("|Battle!|", 1, true)
             or dialog:find("Fighting Crime", 1, true)
             or dialog:find("crime_edit", 1, true)
-
         if not isCrimeDialog then
             return false
         end
-
         if dialog:find("Devil Ham``%'s `2Crush`` card `4melted") then
             liq = "yes"
         end
-
         if dialog:find("Ms%. Terry") and dialog:find("Ban Hammer") then
             ban = "yes"
         end
-
         if dialog:find("|Battle%!|") then
             x = dialog:match("tilex|(%d+)")
             y = dialog:match("tiley|(%d+)")
-
             log("`0 Crime :" .. (dialog:match("add_textbox|(.*)`` is") or "Unknown"))
-
             if dialog:find("Crime in Progress", 1, true) then
                 c1 = 2298
                 c2 = 2308
@@ -4051,53 +3487,41 @@ if autocrime then
                 c4 = 2324
                 c5 = 2332
             end
-
             if dialog:find("Jimmy Snow", 1, true) then
                 use1, use2, use3 = c5, c4, c3
-
             elseif dialog:find("Big Bertha", 1, true) then
                 use1, use2, use3 = c1, c4, c3
-
             elseif dialog:find("Shockinator", 1, true) then
                 use1, use2, use3 = c4, c3, c1
-
             elseif dialog:find("The Firebug", 1, true) then
                 use1, use2, use3 = c2, c1, c5
-
             elseif dialog:find("Generic Thug", 1, true)
                 or dialog:find("Kat 5", 1, true) then
                 use1, use2, use3 = c4, c3, c2
-
             elseif dialog:find("Professor Pummel", 1, true) then
                 c1, c2, c3, c4, c5 = 2296, 2298, 2300, 2320, 2324
                 use1, use2, use3 = c3, c2, c1
-
             elseif dialog:find("Z%. Everett Koop") then
                 c1, c2, c3, c4, c5 = 2296, 2298, 2300, 2320, 2324
                 use1, use2, use3 = c3, c1, c2
-
             elseif dialog:find("Dr%. Destructo") then
                 c1, c2, c3, c4, c5 = 2298, 2308, 2310, 2314, 2316
                 step = "0"
                 use1, use2, use3 = c1, c3, c5
-
             elseif dialog:find("Dragon Hand", 1, true)
                 or dialog:find("Almighty Seth", 1, true) then
                 c1, c2, c3, c4, c5 = 2308, 2312, 2314, 2326, 2328
                 use1, use2, use3 = c5, c4, 6969
-
             elseif dialog:find("Devil Ham", 1, true) then
                 c1, c2, c3, c4, c5 = 2298, 2332, 2334, 2336, 2338
                 use1, use2, use3, use4, use5 = c1, c4, c5, c3, c2
                 liq = "no"
                 step = "1"
-
             elseif dialog:find("Ms%. Terry") then
                 c1, c2, c3, c4, c5 = 2294, 2316, 2322, 2328, 2338
                 use1, use2, use3, use4, use5 = c1, c2, c3, c4, c5
                 ban = "no"
             end
-
             if x and y and c1 and c2 and c3 and c4 and c5 then
                 SendPacket(
                     2,
@@ -4114,38 +3538,29 @@ if autocrime then
                     "c" .. c5 .. "|1\n"
                 )
             end
-
         elseif dialog:find("Fighting Crime", 1, true)
             and dialog:find("Devil Ham", 1, true) then
-
             if liq == "no" then
                 if use1 and dialog:find("c" .. use1, 1, true) then
                     use = use1
                 else
                     use = "passturn"
                 end
-
             elseif use2 and dialog:find("c" .. use2, 1, true) and step == "0" then
                 step = "1"
                 use = use2
-
             elseif use3 and dialog:find("c" .. use3, 1, true) then
                 use = use3
-
             elseif use4 and dialog:find("c" .. use4, 1, true) then
                 use = use4
-
             elseif use5 and dialog:find("c" .. use5, 1, true) then
                 use = use5
-
             else
                 use = "passturn"
             end
-
             if tonumber(use) then
                 logCrimeItem(use)
             end
-
             if x and y then
                 SendPacket(
                     2,
@@ -4157,13 +3572,10 @@ if autocrime then
                     "buttonClicked|c" .. use
                 )
             end
-
         elseif dialog:find("Fighting Crime", 1, true)
             and dialog:find("Ms%. Terry") then
-
             if dialog:find("is going to play `%d") then
                 local enemyMove = dialog:match("is going to play `(%d)")
-
                 if enemyMove == "2" then
                     use = use1
                 elseif enemyMove == "4" then
@@ -4173,7 +3585,6 @@ if autocrime then
                 elseif enemyMove == "1" then
                     use = use5
                 end
-
             elseif use3 and dialog:find("c" .. use3, 1, true) then
                 use = use3
             elseif use5 and dialog:find("c" .. use5, 1, true) and ban == "yes" then
@@ -4189,13 +3600,10 @@ if autocrime then
             else
                 use = "passturn"
             end
-
             use = use or "passturn"
-
             if tonumber(use) then
                 logCrimeItem(use)
             end
-
             if x and y then
                 SendPacket(
                     2,
@@ -4207,10 +3615,8 @@ if autocrime then
                     "buttonClicked|c" .. use
                 )
             end
-
         elseif dialog:find("Fighting Crime", 1, true)
             and dialog:find("Dr%. Destructo") then
-
             if use1 and dialog:find("c" .. use1, 1, true) and step == "0" then
                 use = use1
                 step = "1"
@@ -4221,11 +3627,9 @@ if autocrime then
             else
                 use = "passturn"
             end
-
             if tonumber(use) then
                 logCrimeItem(use)
             end
-
             if x and y then
                 SendPacket(
                     2,
@@ -4237,7 +3641,6 @@ if autocrime then
                     "buttonClicked|c" .. use
                 )
             end
-
         elseif dialog:find("Fighting Crime", 1, true) then
             if use1 and dialog:find("c" .. use1, 1, true) then
                 use = use1
@@ -4248,11 +3651,9 @@ if autocrime then
             else
                 use = "passturn"
             end
-
             if tonumber(use) then
                 logCrimeItem(use)
             end
-
             if x and y then
                 SendPacket(
                     2,
@@ -4265,14 +3666,11 @@ if autocrime then
                 )
             end
         end
-
         return true
     end
 end
-
     if relogPending and (var.v1 == "OnConsoleMessage" or var.v1 == "OnSpawn") then
         local world = (type(GetWorldName) == "function" and GetWorldName()) or ""
-
         if not world or world == "" or world == "EXIT" then
             if type(relogWorld) == "string" and relogWorld ~= "" then
                 SendPacket(3, "action|join_request\nname|" .. relogWorld .. "\ninvitedWorld|0")
@@ -4280,24 +3678,18 @@ end
             relogPending = false
         end
     end
-    
         if var.v1 == "OnTalkBubble" and var.v3 then
         if tostring(var.v3):find("You need to be", 1, true) then
             return true
         end
     end
-
     return false
 end
-
 function raw(a)
-
 if type(a) ~= "table" then
     return false
 end
-
         if auto_accept_hide_ticks > 0 then auto_accept_hide_ticks = auto_accept_hide_ticks - 1 end
-
 if a.type == 11 and checkworld() then
     local objects = GetObjectListSafe()
     if type(objects) == "table" then
@@ -4306,7 +3698,6 @@ if a.type == 11 and checkworld() then
                 if tonumber(obj.itemid) == 112 then
                     local pickedAmount = tonumber(obj.amount) or 1
                     cg = (tonumber(cg) or 0) + pickedAmount
-
                     if show_gems_collected then
                         collectedCounterGems = (tonumber(collectedCounterGems) or 0) + pickedAmount
                     end
@@ -4319,20 +3710,17 @@ end
 if a.type == 3 then
 cg = 0
 end
-
 if visual_gems_mode and checkworld() then
     if type(a) == "table" then
         if a.type == 0 then
             local tx = a.px or (a.x and math.floor(a.x / 32))
             local ty = a.py or (a.y and math.floor(a.y / 32))
-
             if tx and ty then
                 triggerParticleAt1(tx, ty, 80)
             end
         end
     end
     end
-
 if takerighton == true then
 if a.type == 3 and a.value == 18 then
 takerightx = a.px
@@ -4353,7 +3741,6 @@ btk()
 log("`9Pos Take Left: `2DONE")
 ontalk("`9Pos Take Left: `2DONE")
 end end
-
 if player1loc == true then
 if a.type == 3 and a.value == 18 then
 player1x = a.px
@@ -4394,7 +3781,6 @@ btk()
 log("`9Pos Player 4: `2DONE")
 ontalk("`9Pos Player 4: `2DONE")
 end end
-
 if gemsright1 == true then
 if a.type == 3 and a.value == 18 then
 gemsrightx1 = a.px
@@ -4693,17 +4079,14 @@ btk()
 log("`9Back Position `2DONE")
 ontalk("`9Back Position `2DONE")
 end end
-
 if checktile then
 if a.type == 3 then
 ontext("`#X : `3"..a.px.." `6Y : `9"..a.py)
 log("`#X : `3"..a.px.." `6Y : `9"..a.py)
 end
 end
-
 return false
 end
-
 function OnGamePacket(game)
     if visual_gems_mode and type(game) == "table"
         and game.type == 14 and game.value == 112 then
@@ -4713,7 +4096,6 @@ function OnGamePacket(game)
     end
     return false
 end
-
 function OnValue(packetType, name, value)
 if name == "checkcollectedgems" then
 SendPacket(2,"action|input\n|text|Collected `#+"..cg.." `7Gems")
@@ -4721,25 +4103,20 @@ log("`9Gems `7Lu `#"..cg.."`7 y")
 cg = 0
 return false
 end
-
 if name == "btkbutton" then
 btk()
 kou()
 end
-
 if name == "takebet" then
 take()
 end
-
 if name == "droptax" then
 droptax()
 end
-
 if name == "win1" then
 execute_payout(1)
 return true
 end
-
 if name == "win2" then
 execute_payout(2)
 return true
@@ -4752,23 +4129,19 @@ if name == "win4" then
 execute_payout(4)
 return true
 end
-
 if name == "droppayout" then
 execute_payout(5)
 return true
 end
-
 if name == "takingblock" then
 takeblock()
 log("Block has been Taked")
 ontext("Block has been taked")
 end
-
 if name == "checkgemss" then
 checkgems()
 ontext("Gems checking is launching")
 end
-
 if name == "game_mode" then
 if value == 0 then
 Config.gameMode = "number_only"
@@ -4786,22 +4159,18 @@ spin_mode = "NUMBERONLY"
         Config.gameMode = "lewa"
         spin_mode = "LEWA"
     end
-
     pref:set("game_mode", value)
     pref:save()
     log("Game Mode: " .. tostring(spin_mode))
 end
-
         if name == "save_world" then
         saveworldsaved = tostring(value)
 pref:set("save_world", saveworldsaved)
 pref:save()
     end
-
     if name == "wptosave" then
 growtopia.warpTo(""..saveworldsaved.."")
     end
-
     if name == "Growz V2" then
     growz_enabled = value
         pref:set("growz_enabled", growz_enabled)
@@ -4812,46 +4181,36 @@ growtopia.warpTo(""..saveworldsaved.."")
         pref:set("speed_growz", value)
         pref:save()
     end
-
     if name == "cheat_antilag" then
     antilag = value
-
     pref:set("antilag", value)
         pref:save()
         end
-
             if name == "Fast Take" then
     fasttake = value
-
     pref:set("fasttake", value)
         pref:save()
         end
-
         if name == "config_cheat_noparticle" then
         noparticle = value
         pref:set("noparticle", value)
         pref:save()
         end
-
         if name == "cheat_config_fastdrop_active" then
         fastdrop = value
         pref:set("fastdrop", value)
         pref:save()
         end
-
     if name == "selected_item" then
         local selectedItemID = findItemID(value)
-
         if selectedItemID then
             log("`2[ID FINDER] Item ditemukan")
             log("`wName: `9" .. tostring(value))
             log("`wID: `9" .. tostring(selectedItemID))
-
             ontext("ID: " .. tostring(selectedItemID))
             ontalk("`2Item ditemukan")
             ontalk("`wName: `9" .. tostring(value))
             ontalk("`wID: `9" .. tostring(selectedItemID))
-
             if growtopia.checkInventory(selectedItemID) then
                 log("`2Status: Item ada di inventory")
             else
@@ -4860,20 +4219,15 @@ growtopia.warpTo(""..saveworldsaved.."")
         else
             log("`4[ID FINDER] ID item tidak ditemukan")
             log("`wName: `9" .. tostring(value))
-
             ontext("ID item tidak ditemukan")
             ontalk("`4ID item tidak ditemukan")
         end
-
         return true
     end
-
         if name == "scan_gems1x" then
         ScanGemsParticle()
 end
-
     if name == "scan_gems_repeat" then
-        -- Samakan toggle UI dengan fungsi Gems Repeat pada dialog.
         local valueText = tostring(value):lower()
         local enabled = value == true
             or value == 1
@@ -4881,26 +4235,20 @@ end
             or valueText == "true"
             or valueText == "on"
         gemsrepeat = enabled
-
         ontext("`2Gems Repeat : " .. (gemsrepeat and "`2ON" or "`4OFF"))
-
         if gemsrepeat then
             runThread(function()
                 repeatgems()
             end)
         end
-
         return true
     end
-    
 if name == "scan_gems" then
         local enabled = value == true
             or value == 1
             or value == "1"
             or value == "true"
-
         visual_gems_mode = enabled
-
         if visual_gems_mode then
             runThread(function()
                 if visual_gems_mode then
@@ -4908,13 +4256,10 @@ if name == "scan_gems" then
                 end
             end)
         end
-
         ontext("`9Visual Gems Mode : " ..
             (visual_gems_mode and "`2ON" or "`4OFF"))
-
         return true
     end
-
     if name == "show_collected_gems_toggle" then
         local normalizedValue = tostring(value):lower()
         local enabled = value == true
@@ -4922,17 +4267,13 @@ if name == "scan_gems" then
             or normalizedValue == "1"
             or normalizedValue == "true"
             or normalizedValue == "on"
-
         show_gems_collected = enabled
         collectedCounterGems = 0
         lastGemGainTime = 0
-
         ontext("`9Show Gems Collected : " ..
             (show_gems_collected and "`2ON" or "`4OFF"))
-
         return true
     end
-    
     if name == "world_collect_drop_logs_toggle" then
         local normalized = tostring(value):lower()
         local enabled = value == true or value == 1 or value == "1"
@@ -4940,30 +4281,21 @@ if name == "scan_gems" then
         world_collect_drop_logs_enabled = enabled
         pref:set("world_collect_drop_logs_enabled", enabled)
         pref:save()
-        -- Reset baseline on both transitions to avoid false events after toggling.
         wcd_snapshot, wcd_world, wcd_inventory_snapshot = nil, nil, nil
         ontext("`9Collect/Drop Logs: " .. (enabled and "`2ON" or "`4OFF"))
         log("`9Collect/Drop Logs: " .. (enabled and "`2ON" or "`4OFF"))
         return true
     end
-
     if tostring(name or ""):lower() == "spinlogss" then
         show_spin_logs("")
         return true
     end
-    
     if name == "collect/droppedlock" then
         show_world_logs()
         return true
     end
-    
-
-    
-
 return false
 end
-
--- Auto Spam Text worker: waits while outside a valid world and never calls GetWorld().
 if type(runThread) == "function" and type(Sleep) == "function" then
     runThread(function()
         while true do
@@ -4984,7 +4316,6 @@ if type(runThread) == "function" and type(Sleep) == "function" then
                     end
                     Sleep(math.max(1000, spamText.interval))
                 else
-                    -- Pause sending outside world; it can resume once world safety passes.
                     Sleep(500)
                 end
             else
@@ -4993,8 +4324,6 @@ if type(runThread) == "function" and type(Sleep) == "function" then
         end
     end)
 end
-
--- Start the world collect/drop scanner only once; it uses existing Kou Project hooks
 if type(runThread) == "function" and type(Sleep) == "function" then
     runThread(function()
         while true do
@@ -5003,7 +4332,6 @@ if type(runThread) == "function" and type(Sleep) == "function" then
         end
     end)
 end
-
 local hookApi = addHook or AddHook
 if type(hookApi) == "function" then
     hookApi(hook, "onSendPacket")
@@ -5011,7 +4339,6 @@ if type(hookApi) == "function" then
     hookApi(raw, "onSendPacketRaw")
     hookApi(OnValue, "onValue")
     hookApi(OnGamePacket, "onGamePacket")
-
     local applyApi = applyHook or ApplyHook
     if type(applyApi) == "function" then
         applyApi()
@@ -5019,4 +4346,3 @@ if type(hookApi) == "function" then
 else
     log("`4[Kou Project] Hook API addHook tidak tersedia.")
 end
-
