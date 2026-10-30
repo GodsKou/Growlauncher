@@ -3120,25 +3120,50 @@ if var.v1 == "OnDialogRequest"
     and not wrenchButtonInjecting then
 
     local originalDialog = var.v2
-    local newButton = "\nset_bg_color|10, 10, 10, 180|\nset_bg_color|10, 10, 10, 180|\nadd_custom_button|button_kou_project|image:/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/buttonmenu.rttex;image_size:400,260;width:0.19;|\n"
-    local colorbg = "set_bg_color|10, 10, 10, 180|"
+
+    local colorbg = "set_bg_color|10, 10, 10, 180|\n"
+    local bordercolor = "set_border_color|180, 180, 180, 180|\n"
+
+    local newButton =
+        "add_custom_button|button_kou_project|image:/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/buttonmenu.rttex;image_size:512,512;width:0.19;|\n"
+
+    local marker = "add_custom_button|open_worldlock_storage"
     local markerStart = originalDialog:find(marker, 1, true)
 
     if markerStart then
         local lineEnd = originalDialog:find("\n", markerStart, true)
+
         if lineEnd then
             local insertAt = lineEnd + 1
-            local updatedDialog = originalDialog:sub(1, insertAt - 1)
+
+            local updatedDialog =
+                originalDialog:sub(1, insertAt - 1)
                 .. newButton
                 .. originalDialog:sub(insertAt)
 
+            -- Sisipkan warna tanpa menghapus isi dialog asli
+            updatedDialog = updatedDialog:gsub(
+                "(set_default_color[^\n]*\n)",
+                "%1" .. colorbg .. bordercolor,
+                1
+            )
+
             if type(SendVariant) == "function" then
                 wrenchButtonInjecting = true
+
                 local ok, err = pcall(function()
-                    SendVariant({v1 = "OnDialogRequest", v2 = updatedDialog})
+                    SendVariant({
+                        v1 = "OnDialogRequest",
+                        v2 = updatedDialog
+                    })
                 end)
+
                 wrenchButtonInjecting = false
-                if ok then return true end
+
+                if ok then
+                    return true
+                end
+
                 log("`4[WrenchMenu] Injection error: " .. tostring(err))
             end
         else
