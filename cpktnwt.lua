@@ -931,17 +931,33 @@ end
 local gemsRepeatThreadRunning = false
 
 function repeatgems()
+    -- Prevent duplicate workers, but always release the lock when the worker exits.
     if gemsRepeatThreadRunning then return end
     gemsRepeatThreadRunning = true
-    while gemsrepeat do
-        if not checkworld() then return nil end
-        local ok, err = pcall(ScanGemsParticle)
-        if not ok then
-            log("`4[Gems Repeat] Error: " .. tostring(err))
+
+    local ok, err = pcall(function()
+        while gemsrepeat do
+            local worldOk, inWorld = pcall(checkworld)
+
+            if worldOk and inWorld then
+                local scanOk, scanErr = pcall(ScanGemsParticle)
+                if not scanOk then
+                    log("`4[Gems Repeat] Scan error: " .. tostring(scanErr))
+                end
+                Sleep(2000)
+            else
+                -- Do not terminate the worker outside a world; wait and retry.
+                -- This also allows Gems Repeat to resume after entering a world.
+                Sleep(500)
+            end
         end
-        Sleep(2000)
-    end
+    end)
+
     gemsRepeatThreadRunning = false
+
+    if not ok then
+        log("`4[Gems Repeat] Worker error: " .. tostring(err))
+    end
 end
 
 function setblink()
@@ -4858,7 +4874,12 @@ end
 
     if name == "scan_gems_repeat" then
         -- Samakan toggle UI dengan fungsi Gems Repeat pada dialog.
-        local enabled = value == true or value == 1 or value == "true"
+        local valueText = tostring(value):lower()
+        local enabled = value == true
+            or value == 1
+            or valueText == "1"
+            or valueText == "true"
+            or valueText == "on"
         gemsrepeat = enabled
 
         ontext("`2Gems Repeat : " .. (gemsrepeat and "`2ON" or "`4OFF"))
@@ -4973,7 +4994,7 @@ if type(runThread) == "function" and type(Sleep) == "function" then
     end)
 end
 
--- Start the world collect/drop scanner only once; it uses existing Kou Project hooks
+-- Start the world collect/drop scanner only once; it uses existing Kou Project hooks.
 if type(runThread) == "function" and type(Sleep) == "function" then
     runThread(function()
         while true do
