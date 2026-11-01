@@ -1,31 +1,138 @@
 pref = require("preferences")
 pref:new("KouProjectConfig")
 pref:load()
+
+-- Chat Prefix configuration (autosaved)
+local chatPrefixEnabled = pref:get("chat_prefix_enabled", true) == true
+local chatPrefixLeft = pref:get("chat_prefix_left", true) == true
+local chatPrefixRight = pref:get("chat_prefix_right", false) == true
+local chatPrefixRandomColor = pref:get("chat_prefix_random_color", false) == true
+local chatPrefixText = tostring(pref:get("chat_prefix_text", "`b[KOU]") or "`b[KOU]")
+local chatAutoMeEnabled = pref:get("chat_auto_me_enabled", false) == true
+local chatPrefixSending = false
+
+local function saveChatPrefixConfig()
+    local ok, err = pcall(function()
+        pref:set("chat_prefix_enabled", chatPrefixEnabled)
+        pref:set("chat_prefix_left", chatPrefixLeft)
+        pref:set("chat_prefix_right", chatPrefixRight)
+        pref:set("chat_prefix_random_color", chatPrefixRandomColor)
+        pref:set("chat_prefix_text", chatPrefixText)
+        pref:set("chat_auto_me_enabled", chatAutoMeEnabled)
+        pref:save()
+    end)
+    if not ok then
+        log("`4[Chat Prefix] Save config error: " .. tostring(err))
+        return false
+    end
+    return true
+end
+
+local function openChatPrefixMenu()
+    local d = [[
+set_default_color|`o
+add_label_with_icon|big|`bChat Prefix Menu|left|1250|
+add_spacer|small|
+add_textbox|`wPrefix Text:|
+add_text_input|chat_prefix_text|Prefix:|]] .. chatPrefixText .. [[|50|
+add_spacer|small|
+add_textbox|`wPrefix Position:|
+add_checkbox|chat_prefix_left|Left|]] .. (chatPrefixLeft and "1" or "0") .. [[|
+add_checkbox|chat_prefix_right|Right|]] .. (chatPrefixRight and "1" or "0") .. [[|
+add_spacer|small|
+add_checkbox|chat_prefix_enabled|Enable Prefix|]] .. (chatPrefixEnabled and "1" or "0") .. [[|
+add_checkbox|chat_prefix_random_color|Random Color Mode|]] .. (chatPrefixRandomColor and "1" or "0") .. [[|
+add_checkbox|chat_auto_me_enabled|Auto /me Mode|]] .. (chatAutoMeEnabled and "1" or "0") .. [[|
+add_spacer|small|
+add_smalltext|`7Settings are saved automatically when you press Save.|
+end_dialog|chat_prefix_menu|Cancel|Save|
+]]
+    dialog(d)
+end
+
+local chatPrefixColorCodes = {
+    "`0", "`1", "`2", "`3", "`4", "`5", "`6", "`7", "`8", "`9",
+    "`a", "`b", "`c", "`d", "`e", "`f", "`g", "`h", "`i", "`j",
+    "`k", "`l", "`m", "`n", "`o", "`p", "`q", "`r", "`s", "`t",
+    "`u", "`v", "`w", "`x", "`y", "`z", "#"
+}
+
+local function getRandomChatPrefix()
+    local code = chatPrefixColorCodes[math.random(1, #chatPrefixColorCodes)]
+    return code .. chatPrefixText
+end
+
+local function parseChecklistFields(packet)
+    local fields = {}
+    for line in packet:gmatch("[^\r\n]+") do
+        local key, value = line:match("^([^|]+)|([^|]*)$")
+        if key then
+            fields[key] = value
+        end
+    end
+    return fields
+end
+
+local function processChatPrefixReturn(packet)
+    local fields = parseChecklistFields(packet)
+    if fields.buttonClicked == "Cancel" then
+        return true
+    end
+
+    if fields.chat_prefix_text ~= nil then
+        chatPrefixText = fields.chat_prefix_text
+    end
+    chatPrefixEnabled = fields.chat_prefix_enabled == "1"
+    chatPrefixLeft = fields.chat_prefix_left == "1"
+    chatPrefixRight = fields.chat_prefix_right == "1"
+    chatPrefixRandomColor = fields.chat_prefix_random_color == "1"
+    chatAutoMeEnabled = fields.chat_auto_me_enabled == "1"
+    auto_me_mode = chatAutoMeEnabled
+
+    saveChatPrefixConfig()
+    ontext("`9Chat Prefix Config: `2Saved")
+    return true
+end
 local function checkworld()
+    -- Fail closed: login screen, connecting, disconnected, and EXIT are not worlds.
     local worldName = nil
     local worldApiFound = false
-    if type(GetWorldName) == "function" then
+
+    local nameGetter = GetWorldName
+    if type(nameGetter) == "function" then
         worldApiFound = true
-        local ok, result = pcall(GetWorldName)
-        if ok then worldName = result end
-    elseif type(getWorld) == "function" then
-        worldApiFound = true
-        local ok, result = pcall(getWorld)
-        if ok and type(result) == "table" then worldName = result.name end
-    elseif type(getworld) == "function" then
-        worldApiFound = true
-        local ok, result = pcall(getworld)
-        if ok and type(result) == "table" then worldName = result.name end
+        local ok, result = pcall(nameGetter)
+        if ok and type(result) == "string" then
+            worldName = result
+        end
     end
-    if not worldApiFound then return false end
-    if type(worldName) ~= "string" then return false end
+
+    if not worldName then
+        local worldGetter = getWorld or getworld
+        if type(worldGetter) == "function" then
+            worldApiFound = true
+            local ok, result = pcall(worldGetter)
+            if ok and type(result) == "table" and type(result.name) == "string" then
+                worldName = result.name
+            end
+        end
+    end
+
+    if not worldApiFound or type(worldName) ~= "string" then return false end
     worldName = worldName:match("^%s*(.-)%s*$") or ""
-    if worldName == "" or worldName:upper() == "EXIT" then return false end
-    local localGetter = GetLocal or getLocal
-    if type(localGetter) == "function" then
-        local ok, player = pcall(localGetter)
-        if not ok or type(player) ~= "table" then return false end
+    local upperName = worldName:upper()
+    if worldName == "" or upperName == "EXIT" or upperName == "LOADING" then
+        return false
     end
+
+    local localGetter = GetLocal or getLocal
+    if type(localGetter) ~= "function" then return false end
+    local ok, player = pcall(localGetter)
+    if not ok or type(player) ~= "table" then return false end
+
+    -- A local player without a valid network id is usually still connecting.
+    local netid = tonumber(player.netid or player.netID)
+    if not netid or netid <= 0 then return false end
     return true
 end
 local function GetObjectListSafe()
@@ -103,16 +210,6 @@ end_dialog|checklist_dialog|Cancel|Save|
 ]]
     SendVariant({v1 = "OnDialogRequest", v2 = dialog})
 end
-local function parseChecklistFields(packet)
-    local fields = {}
-    for line in packet:gmatch("[^\r\n]+") do
-        local key, value = line:match("^([^|]+)|([^|]*)$")
-        if key then
-            fields[key] = value
-        end
-    end
-    return fields
-end
 local function processChecklistReturn(packet)
     local fields = parseChecklistFields(packet)
     if fields.buttonClicked == "Cancel" then
@@ -145,12 +242,14 @@ modmeno = [[
         {
             "type": "button",
             "text": "Scan Floating Items",
-            "alias": "cheat_growscan_open_floating"
+            "description": "Open GrowScan Floating Items dialog",
+            "alias": "scan_floating"
         },
         {
             "type": "button",
-            "text": "Scan Block",
-            "alias": "cheat_growscan_open_block"
+            "text": "Scan World Blocks",
+            "description": "Open GrowScan World Blocks dialog",
+            "alias": "scan_block"
         },
         {
             "type": "labelapp",
@@ -647,7 +746,11 @@ checkdl = growtopia.checkInventory(1796)
 checkbgl = growtopia.checkInventory(7188)
 auto_bgl_mode = false
 collectedgems = false
-local localPlayerAtStart = (type(GetLocal) == "function" and GetLocal()) or nil
+local localPlayerAtStart = nil
+if type(GetLocal) == "function" then
+    local ok, result = pcall(GetLocal)
+    if ok then localPlayerAtStart = result end
+end
 nick = (type(localPlayerAtStart) == "table" and localPlayerAtStart.name) or "Player"
 cg = 0
 auto_drop_count = 0
@@ -734,7 +837,7 @@ auto_accept_hide_ticks = 0
 punchgems = false
 blinking = (checklist.blinkMode == true) or (blink_color == true)
 kouproject = true
-auto_me_mode = false
+auto_me_mode = chatAutoMeEnabled
 gemsrepeat = false
 spam_tick = 0
 visual_gems_mode = false
@@ -758,8 +861,11 @@ function notify(msg)
     log(msg)
 end
 function message(hax)
-SendPacket(2,"action|input\ntext|(troll) "..hax.."")
-return true
+if not checkworld() then return false end
+local ok = pcall(function()
+    SendPacket(2, "action|input\n|text|(troll) " .. tostring(hax or ""))
+end)
+return ok
 end
 function kou(var)
 var = {}
@@ -2112,6 +2218,164 @@ local function handleSpamTextDialog(packet)
     return true
 end
 local ameEnabled = false
+
+-- ============================================================
+-- KOU GROWSCAN 9000 - integrated into KOU PROJECT
+-- ============================================================
+local GS = {
+    floatingData = {},
+    blockData = {},
+    floatingTotal = 0,
+    blockTotal = 0,
+    floatingSearch = "",
+    blockSearch = ""
+}
+
+local function gsItemName(id)
+    if type(getItemInfoByID) == "function" then
+        local ok, info = pcall(getItemInfoByID, id)
+        if ok and type(info) == "table" and info.name then
+            return tostring(info.name)
+        end
+    end
+    return "Item " .. tostring(id)
+end
+
+local function gsContains(value, query)
+    return query == "" or tostring(value):lower():find(query:lower(), 1, true) ~= nil
+end
+
+local function gsSort(data, query)
+    local result = {}
+    for id, amount in pairs(data) do
+        local name = gsItemName(id)
+        if gsContains(name, query) then
+            result[#result + 1] = {id = id, amount = amount, name = name}
+        end
+    end
+    table.sort(result, function(a, b)
+        if a.amount == b.amount then return a.name:lower() < b.name:lower() end
+        return a.amount > b.amount
+    end)
+    return result
+end
+
+local function gsScanFloating()
+    GS.floatingData, GS.floatingTotal = {}, 0
+    local getter = getObjectList or GetObjectList
+    if type(getter) ~= "function" then return end
+    local ok, objects = pcall(getter)
+    if not ok or type(objects) ~= "table" then return end
+    for _, obj in pairs(objects) do
+        if type(obj) == "table" then
+            local id = tonumber(obj.itemid or obj.itemID) or 0
+            local amount = math.max(1, tonumber(obj.amount or obj.count) or 1)
+            if id > 0 then
+                GS.floatingData[id] = (GS.floatingData[id] or 0) + amount
+                GS.floatingTotal = GS.floatingTotal + amount
+            end
+        end
+    end
+end
+
+local function gsScanBlocks()
+    GS.blockData, GS.blockTotal = {}, 0
+    if type(getTiles) ~= "function" then return end
+    local ok, tiles = pcall(getTiles)
+    if not ok or type(tiles) ~= "table" then return end
+    for _, tile in pairs(tiles) do
+        if type(tile) == "table" then
+            local fg, bg = tonumber(tile.fg) or 0, tonumber(tile.bg) or 0
+            if fg > 0 then
+                GS.blockData[fg] = (GS.blockData[fg] or 0) + 1
+                GS.blockTotal = GS.blockTotal + 1
+            end
+            if bg > 0 then
+                GS.blockData[bg] = (GS.blockData[bg] or 0) + 1
+                GS.blockTotal = GS.blockTotal + 1
+            end
+        end
+    end
+end
+
+local function gsShowMain()
+    dialog([[
+set_default_color|`o
+set_bg_color|10, 10, 10, 180|
+set_border_color|180, 180, 180, 180|
+add_label_with_icon|big|`2KOU GrowScan 9000|left|6016|
+add_spacer|small|
+add_textbox|`7Select a scan category.|left|
+add_button|gs_floating|`wFloating Items|
+add_button|gs_blocks|`wWorld Blocks|
+add_spacer|small|
+end_dialog|growscan_main|||
+add_quick_exit|
+]])
+end
+
+local function gsShowList(kind)
+    local isFloating = kind == "floating"
+    if isFloating then gsScanFloating() else gsScanBlocks() end
+    local data = isFloating and GS.floatingData or GS.blockData
+    local query = isFloating and GS.floatingSearch or GS.blockSearch
+    local total = isFloating and GS.floatingTotal or GS.blockTotal
+    local rows = gsSort(data, query)
+    local title = isFloating and "Floating Items" or "World Blocks"
+    local d = "set_default_color|`o\n"
+        .. "set_bg_color|10, 10, 10, 180|\n"
+        .. "set_border_color|180, 180, 180, 180|\n"
+        .. "add_label_with_icon|big|`2" .. title .. "|left|6016|\n"
+        .. "add_smalltext|Total Amount: " .. tostring(total) .. "|\n"
+        .. "add_spacer|small|\n"
+        .. "add_text_input|gs_search_name|Search item name:|" .. query .. "|30|\n"
+        .. "add_button|gs_search|`2Search|\n"
+        .. "add_spacer|small|\n"
+    if #rows == 0 then
+        d = d .. "add_textbox|`4No matching items found.|left|\n"
+    else
+        for _, row in ipairs(rows) do
+            local safeName = row.name:gsub("|", "/"):gsub("[\r\n]", " ")
+            d = d .. "add_label_with_icon|small|" .. safeName .. " : `w"
+                .. tostring(row.amount) .. "|left|" .. tostring(row.id) .. "|\n"
+        end
+    end
+    d = d .. "add_spacer|small|\n"
+        .. "add_button|gs_back|`wBack|\n"
+        .. "end_dialog|growscan_" .. kind .. "|||\n"
+        .. "add_quick_exit|\n"
+    dialog(d)
+end
+
+local function gsHandleDialogReturn(str)
+    if not str:find("action|dialog_return", 1, true) then return false end
+    local dialogName = str:match("dialog_name|([^\r\n]*)") or ""
+    local button = str:match("buttonClicked|([^\r\n]*)") or ""
+    if button == "gs_floating" and dialogName == "growscan_main" then
+        GS.floatingSearch = ""
+        gsShowList("floating")
+        return true
+    elseif button == "gs_blocks" and dialogName == "growscan_main" then
+        GS.blockSearch = ""
+        gsShowList("blocks")
+        return true
+    elseif button == "gs_search" and (dialogName == "growscan_floating" or dialogName == "growscan_blocks") then
+        local query = str:match("gs_search_name|([^\r\n]*)") or ""
+        if dialogName == "growscan_floating" then
+            GS.floatingSearch = query
+            gsShowList("floating")
+        else
+            GS.blockSearch = query
+            gsShowList("blocks")
+        end
+        return true
+    elseif button == "gs_back" and (dialogName == "growscan_floating" or dialogName == "growscan_blocks") then
+        gsShowMain()
+        return true
+    end
+    return false
+end
+
 function hook(packetType, str, packet)
     str = tostring(str or "")
     local chatInput = nil
@@ -2134,14 +2398,159 @@ dialog(mmenu)
         end
         return input:sub(1, #expected + 1) == expected .. " "
     end
-    if cmd("/ame") then
-        ameEnabled = not ameEnabled
-        ontext("`9Auto /me : " .. (ameEnabled and "`2ON" or "`4OFF"))
-        log("`9Auto /me : " .. (ameEnabled and "`2ON" or "`4OFF"))
+    -- GrowScan button handlers: accept both JSON UI aliases and dialog-return packets.
+    -- Do not gate dialog opening on checkworld(); show the dialog first and let the
+    -- scan functions return an empty result when the player is outside a world.
+    local isFloatingButton = str:find("buttonClicked|scan_floating", 1, true)
+        or str:find("|scan_floating|", 1, true)
+        or str:find("scan_floating", 1, true)
+    local isBlockButton = str:find("buttonClicked|scan_block", 1, true)
+        or str:find("|scan_block|", 1, true)
+        or str:find("scan_block", 1, true)
+
+    if isFloatingButton or cmd("/scan") then
+        GS.floatingSearch = ""
+        local ok, err = pcall(function()
+            local d = nil
+            -- Build and display the GrowScan list through the existing dialog sender.
+            gsScanFloating()
+            local rows = gsSort(GS.floatingData, GS.floatingSearch)
+            d = "set_default_color|`o\n"
+                .. "set_bg_color|10, 10, 10, 180|\n"
+                .. "set_border_color|180, 180, 180, 180|\n"
+                .. "add_label_with_icon|big|`2Floating Items|left|6016|\n"
+                .. "add_smalltext|Total Amount: " .. tostring(GS.floatingTotal) .. "|\n"
+                .. "add_spacer|small|\n"
+                .. "add_text_input|gs_search_name|Search item name:||30|\n"
+                .. "add_button|gs_search|`2Search|\n"
+            if #rows == 0 then
+                d = d .. "add_textbox|`4No floating items found.|left|\n"
+            else
+                for _, row in ipairs(rows) do
+                    d = d .. "add_label_with_icon|small|" .. tostring(row.name):gsub("|", "/")
+                        .. " : `w" .. tostring(row.amount) .. "|left|" .. tostring(row.id) .. "|\n"
+                end
+            end
+            d = d .. "add_button|gs_back|`wBack|\nend_dialog|growscan_floating|||\nadd_quick_exit|\n"
+            dialog(d)
+        end)
+        if not ok then log("`4[GrowScan] Floating dialog error: " .. tostring(err)) end
         return true
     end
-    if ameEnabled and chatInput and input ~= "" and input:sub(1, 1) ~= "/" then
-        SendPacket(2, "action|input\n|text|/me " .. chatInput)
+
+    if isBlockButton or cmd("/scanblock") then
+        GS.blockSearch = ""
+        local ok, err = pcall(function()
+            local d = nil
+            gsScanBlocks()
+            local rows = gsSort(GS.blockData, GS.blockSearch)
+            d = "set_default_color|`o\n"
+                .. "set_bg_color|10, 10, 10, 180|\n"
+                .. "set_border_color|180, 180, 180, 180|\n"
+                .. "add_label_with_icon|big|`2World Blocks|left|6016|\n"
+                .. "add_smalltext|Total Blocks: " .. tostring(GS.blockTotal) .. "|\n"
+                .. "add_spacer|small|\n"
+                .. "add_text_input|gs_search_name|Search block name:||30|\n"
+                .. "add_button|gs_search|`2Search|\n"
+            if #rows == 0 then
+                d = d .. "add_textbox|`4No blocks found.|left|\n"
+            else
+                for _, row in ipairs(rows) do
+                    d = d .. "add_label_with_icon|small|" .. tostring(row.name):gsub("|", "/")
+                        .. " : `w" .. tostring(row.amount) .. "|left|" .. tostring(row.id) .. "|\n"
+                end
+            end
+            d = d .. "add_button|gs_back|`wBack|\nend_dialog|growscan_blocks|||\nadd_quick_exit|\n"
+            dialog(d)
+        end)
+        if not ok then log("`4[GrowScan] Blocks dialog error: " .. tostring(err)) end
+        return true
+    end
+
+    if packetType == 2 and cmd("/growscan") then
+        gsShowMain()
+        return true
+    end
+
+    if str:find("buttonClicked|growscan_open", 1, true) then
+        gsShowMain()
+        return true
+    end
+
+    if packetType == 2 and gsHandleDialogReturn(str) then
+        return true
+    end
+
+    if packetType == 2 and cmd("/chat") then
+        openChatPrefixMenu()
+        return true
+    end
+
+    if packetType == 2
+        and str:find("action|dialog_return", 1, true)
+        and str:find("dialog_name|chat_prefix_menu", 1, true) then
+        return processChatPrefixReturn(str)
+    end
+
+    -- Do not run gameplay commands or chat rewriting from login/loading/disconnected screens.
+    -- The /chat menu and its config dialog above remain usable outside a world.
+    if not checkworld() then
+        return false
+    end
+
+    -- Apply Auto /me and prefix in one rewrite so both features work together.
+    -- Example: /me [KOU] message [KOU]
+    if packetType == 2 and not chatPrefixSending and chatInput and input ~= ""
+        and input:sub(1, 1) ~= "/"
+        and (chatAutoMeEnabled or (chatPrefixEnabled and chatPrefixText ~= ""
+            and (chatPrefixLeft or chatPrefixRight))) then
+
+        local output = chatInput
+
+        if chatPrefixEnabled and chatPrefixText ~= ""
+            and (chatPrefixLeft or chatPrefixRight) then
+            -- Random Color is applied before adding /me, so it also works
+            -- when Auto /me Mode is enabled. Each visible prefix gets a
+            -- fresh random color when both Left and Right are checked.
+            if chatPrefixLeft then
+                local leftPrefix = chatPrefixText
+                if chatPrefixRandomColor then
+                    leftPrefix = getRandomChatPrefix()
+                end
+                output = leftPrefix .. " " .. output
+            end
+
+            if chatPrefixRight then
+                local rightPrefix = chatPrefixText
+                if chatPrefixRandomColor then
+                    rightPrefix = getRandomChatPrefix()
+                end
+                output = output .. " " .. rightPrefix
+            end
+        end
+
+        -- Add /me last, preserving the colored prefix and message.
+        if chatAutoMeEnabled then
+            output = "/me " .. output
+        end
+
+        chatPrefixSending = true
+        local ok, err = pcall(function()
+            SendPacket(2, "action|input\n|text|" .. output)
+        end)
+        chatPrefixSending = false
+
+        if not ok then
+            log("`4[Chat Prefix] Send error: " .. tostring(err))
+        end
+        return true
+    end
+    if cmd("/ame") then
+        chatAutoMeEnabled = not chatAutoMeEnabled
+        auto_me_mode = chatAutoMeEnabled
+        saveChatPrefixConfig()
+        ontext("`9Auto /me : " .. (chatAutoMeEnabled and "`2ON" or "`4OFF"))
+        log("`9Auto /me : " .. (chatAutoMeEnabled and "`2ON" or "`4OFF"))
         return true
     end
 if cmd("/spam") then
@@ -2239,7 +2648,8 @@ text_scaling_string|SubsToIptxtxD|
 add_button_with_icon|fcbgl|`wFast Change BGL|staticPurpleFrame|7188|
 add_button_with_icon|setupbtkk|`wBTK Setup|staticPurpleFrame|340|
 add_button_with_icon|weatherr|`wWeather|staticPurpleFrame|934|
-add_button_with_icon|scan_floating|`wScan Floating|staticPurpleFrame|6016|
+add_button_with_icon|scan_floating|`wScan Floating Items|staticPurpleFrame|6016|
+add_button_with_icon|scan_block|`wScan World Blocks|staticPurpleFrame|6016|
 add_button_with_icon|auto_crime|`wAuto Crime|staticPurpleFrame|2380|
 add_button_with_icon|friends|`wSocial|staticPurpleFrame|9474|
 add_spacer|small|
@@ -2401,11 +2811,6 @@ end
 if str:find("buttonClicked|mod_menu") or cmd("/modmenu") then
 checklist()
 return true
-end
-if str:find("buttonClicked|scan_floating") or cmd("/scan") then
-    kou_floating_search = ""
-    kouFloatingDialog()
-    return true
 end
 if str:find("dialog_name|kou_floating_dialog") then
     if str:find("buttonClicked|kou_float_search_btn") then
@@ -2962,18 +3367,6 @@ end
     if cmd("/w3") then execute_payout(3); return true end
     if cmd("/w4") then execute_payout(4); return true end
     if cmd("/gd") then execute_payout(5); return true end
-    if cmd("/ame") then
-        auto_me_mode = not auto_me_mode
-        ontext("`2Auto /me Mode: " .. (auto_me_mode and "`2ON" or "`4OFF"))
-        return true
-    end
-    if auto_me_mode and type(str) == "string" then
-    local chat_msg = str:match("action|input\n|text|([^\n]*)")
-    if chat_msg and chat_msg ~= "" and chat_msg:sub(1, 1) ~= "/" then
-        SendPacket(2, "action|input\n|text|/me " .. chat_msg)
-        return true
-    end
-end
 if string.match(input, "/drop (%d+) (%d+)") then
 local id = string.match(input, "/drop (%d+)")
 local amount = string.match(input, "/drop "..id.." (%d+)")
@@ -2990,13 +3383,6 @@ local amount = string.match(input, "/drop "..id.." (%d+)")
         })
 end
         return true
-    end
-    if auto_me_mode and str:find("action|input\n|text|") then
-        local chat_msg = str:match("text|(.*)")
-        if chat_msg and chat_msg:sub(1,1) ~= "/" then
-            SendPacket(2, "action|input\n|text|/me " .. chat_msg)
-            return true
-        end
     end
 if string.match(input, "^/split%s+(%d+)$") then
     local pct = tonumber(string.match(input, "^/split%s+(%d+)$"))
@@ -3046,6 +3432,12 @@ function var(var)
         return false
     end
     var.v1 = tostring(var.v1 or "")
+
+    -- Ignore world/game variants while at login, loading, or disconnected.
+    -- Chat menu dialog itself is sent locally and does not depend on world state.
+    if not checkworld() then
+        return false
+    end
         if auto_accept_hide_ticks > 0 and var.v1:find("OnDialogRequest") then
         if var.v2:find("acceptlock") or var.v2:find("acceptaccess") then
             return true
@@ -3714,6 +4106,9 @@ function raw(a)
 if type(a) ~= "table" then
     return false
 end
+if not checkworld() then
+    return false
+end
         if auto_accept_hide_ticks > 0 then auto_accept_hide_ticks = auto_accept_hide_ticks - 1 end
 if a.type == 11 and checkworld() then
     local objects = GetObjectListSafe()
@@ -4113,6 +4508,7 @@ end
 return false
 end
 function OnGamePacket(game)
+    if not checkworld() then return false end
     if visual_gems_mode and type(game) == "table"
         and game.type == 14 and game.value == 112 then
         local tx = math.floor((game.x or 0) / 32)
@@ -4122,6 +4518,27 @@ function OnGamePacket(game)
     return false
 end
 function OnValue(packetType, name, value)
+-- JSON UI buttons are delivered through onValue, not necessarily onSendPacket.
+-- Handle GrowScan aliases before the world-state guard so the dialog can open
+-- and show an empty result safely when no world is loaded.
+if name == "scan_floating" then
+    GS.floatingSearch = ""
+    local ok, err = pcall(gsShowList, "floating")
+    if not ok then log("`4[GrowScan] Floating dialog error: " .. tostring(err)) end
+    return true
+end
+if name == "scan_block" then
+    GS.blockSearch = ""
+    local ok, err = pcall(gsShowList, "blocks")
+    if not ok then log("`4[GrowScan] Blocks dialog error: " .. tostring(err)) end
+    return true
+end
+if name == "growscan_open" then
+    local ok, err = pcall(gsShowMain)
+    if not ok then log("`4[GrowScan] Main dialog error: " .. tostring(err)) end
+    return true
+end
+if not checkworld() then return false end
 if name == "checkcollectedgems" then
 SendPacket(2,"action|input\n|text|Collected `#+"..cg.." `7Gems")
 log("`9Gems `7Lu `#"..cg.."`7 y")
@@ -4357,16 +4774,36 @@ if type(runThread) == "function" and type(Sleep) == "function" then
         end
     end)
 end
+-- ============================================================
+-- GLOBAL SAFETY WRAPPERS
+-- Protect every registered callback from nil APIs / bad states.
+-- World-dependent handlers also retain their own checkworld().
+-- ============================================================
+local function makeSafeHook(callback, hookName)
+    return function(...)
+        if type(callback) ~= "function" then return false end
+        local packed = { pcall(callback, ...) }
+        if not packed[1] then
+            pcall(function()
+                log("`4[Kou Safety] " .. tostring(hookName) .. " error: " .. tostring(packed[2]))
+            end)
+            return false
+        end
+        return (table.unpack or unpack)(packed, 2)
+    end
+end
+
 local hookApi = addHook or AddHook
 if type(hookApi) == "function" then
-    hookApi(hook, "onSendPacket")
-    hookApi(var, "onVariant")
-    hookApi(raw, "onSendPacketRaw")
-    hookApi(OnValue, "onValue")
-    hookApi(OnGamePacket, "onGamePacket")
+    hookApi(makeSafeHook(hook, "onSendPacket"), "onSendPacket")
+    hookApi(makeSafeHook(var, "onVariant"), "onVariant")
+    hookApi(makeSafeHook(raw, "onSendPacketRaw"), "onSendPacketRaw")
+    hookApi(makeSafeHook(OnValue, "onValue"), "onValue")
+    hookApi(makeSafeHook(OnGamePacket, "onGamePacket"), "onGamePacket")
     local applyApi = applyHook or ApplyHook
     if type(applyApi) == "function" then
-        applyApi()
+        local ok, err = pcall(applyApi)
+        if not ok then pcall(log, "`4[Kou Safety] applyHook error: " .. tostring(err)) end
     end
 else
     log("`4[Kou Project] Hook API addHook tidak tersedia.")
