@@ -2390,7 +2390,6 @@ function hook(packetType, str, packet)
 dialog(mmenu)
         return true
     end
-
     local function cmd(command)
         local expected = tostring(command or ""):lower()
         if input == expected then
@@ -2648,13 +2647,11 @@ text_scaling_string|SubsToIptxtxD|
 add_button_with_icon|fcbgl|`wFast Change BGL|staticPurpleFrame|7188|
 add_button_with_icon|setupbtkk|`wBTK Setup|staticPurpleFrame|340|
 add_button_with_icon|weatherr|`wWeather|staticPurpleFrame|934|
-add_button_with_icon|scan_floating|`wScan Floating Items|staticPurpleFrame|6016|
-add_button_with_icon|scan_block|`wScan World Blocks|staticPurpleFrame|6016|
 add_button_with_icon|auto_crime|`wAuto Crime|staticPurpleFrame|2380|
 add_button_with_icon|friends|`wSocial|staticPurpleFrame|9474|
 add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
-add_textbox|`wGems Tools|left|
+add_textbox|`wMore Tools|left|
 text_scaling_string|SubsToIptxtxD|
 add_button_with_icon|spammode|`wSpam Mode|staticPurpleFrame|5770|
 add_button_with_icon|open_logs|`wLogs|staticPurpleFrame|1752|
@@ -2662,10 +2659,6 @@ add_spacer|small|
 add_button_with_icon||END_LIST|noflags|0||
 end_dialog|k||Back|
 ]]
-if str:find("action|friends\ndelay") or str:find("buttonClicked|bk0") or str == ("action|dialog_return\ndialog_name|socialportal\n") then
-    dialog(mmenu)
-    return true
-end
     if cmd("/logs") or str:find("buttonClicked|open_logs") then
         show_logs_menu()
         return true
@@ -2784,6 +2777,10 @@ end
         log("`2Checklist Saved")
         return true
     end
+if str:find("action|friends\ndelay") or str:find("buttonClicked|bk0") or str == ("action|dialog_return\ndialog_name|socialportal\n") then
+    dialog(mmenu)
+    return true
+end
 if str:find("buttonClicked|friends") then
 SendPacket(2,"action|friends\ndelay|0\n")
 return true
@@ -3358,10 +3355,7 @@ if cmd("/dt") then
 droptax()
 return true
 end
-if cmd("/radar") then
-showRadar()
-return true
-end
+-- Radar feature removed.
     if cmd("/w1") then execute_payout(1); return true end
     if cmd("/w2") then execute_payout(2); return true end
     if cmd("/w3") then execute_payout(3); return true end
@@ -3426,24 +3420,61 @@ end
 return false
 end
 local telephoneListInjecting = false
+local vendingOwnedInjecting = false
 local wrenchButtonInjecting = false
+local kouDarkDialogProcessing = false
+
+local KouDarkDialog = {
+    enabled = true,
+    bg = "10, 10, 10, 180",
+    border = "180, 180, 180, 180"
+}
+
+local function kouReplaceDialogColor(payload, key, value)
+    if type(payload) ~= "string" then return payload end
+    local found = false
+    local result = {}
+
+    for line in (payload .. "\n"):gmatch("(.-)\n") do
+        if line:match("^" .. key .. "|") then
+            result[#result + 1] = key .. "|" .. value .. "|"
+            found = true
+        else
+            result[#result + 1] = line
+        end
+    end
+
+    if not found then
+        table.insert(result, 1, key .. "|" .. value .. "|")
+    end
+    return table.concat(result, "\n")
+end
+
+local function kouApplyDarkDialog(payload)
+    if type(payload) ~= "string" then return payload end
+    payload = kouReplaceDialogColor(payload, "set_bg_color", KouDarkDialog.bg)
+    payload = kouReplaceDialogColor(payload, "set_border_color", KouDarkDialog.border)
+    return payload
+end
+
+
+
+
+
 function var(var)
     if type(var) ~= "table" then
         return false
     end
     var.v1 = tostring(var.v1 or "")
 
-    -- Ignore world/game variants while at login, loading, or disconnected.
-    -- Chat menu dialog itself is sent locally and does not depend on world state.
-    if not checkworld() then
-        return false
-    end
+    -- Do not globally discard incoming variants during connection/loading.
+    -- World-dependent actions below must check checkworld() at the point of use.
         if auto_accept_hide_ticks > 0 and var.v1:find("OnDialogRequest") then
         if var.v2:find("acceptlock") or var.v2:find("acceptaccess") then
             return true
         end
     end
-    if auto_accept_mode and var.v1:find("OnConsoleMessage") and var.v2:find("wants to add you to a") then
+    if checkworld() and auto_accept_mode and var.v1:find("OnConsoleMessage") and var.v2:find("wants to add you to a") then
         local my_netid = tonumber(GetLocal().netid) or tonumber(GetLocal().netID) or 0
         SendPacket(2, "action|wrench\n|netid|" .. my_netid)
         SendPacket(2, "action|dialog_return\ndialog_name|popup\nnetID|" .. my_netid .. "|\nbuttonClicked|acceptlock")
@@ -3451,12 +3482,121 @@ function var(var)
         auto_accept_hide_ticks = 10
         ontext("`2ACCESS GRANTED")
     end
+
+
+    -- Block native Drop dialogs for selected currency/item IDs (original behavior).
     if var.v1 == "OnDialogRequest" and type(var.v2) == "string" then
         local d = var.v2
-        if d:find("drop", 1, true) and (d:find("242", 1, true) or d:find("1796", 1, true) or d:find("7188", 1, true) or d:find("4604", 1, true)) then
+        if d:find("drop", 1, true) and (
+            d:find("242", 1, true)
+            or d:find("1796", 1, true)
+            or d:find("7188", 1, true)
+            or d:find("4604", 1, true)
+        ) then
             return true
         end
     end
+
+    -- Vending owned-count injection. Re-send the modified dialog once under a
+    -- guard because some Growlauncher builds expose OnVariant payloads read-only.
+    if var.v1 == "OnDialogRequest" and type(var.v2) == "string"
+        and not vendingOwnedInjecting then
+        local originalDialog = var.v2
+        local lowerDialog = originalDialog:lower()
+        local isVending = lowerDialog:find("you will get:", 1, true)
+            or lowerDialog:find("how many would you like to buy", 1, true)
+            or lowerDialog:find("how many would you like to sell", 1, true)
+
+        if isVending and not lowerDialog:find("owned in backpack:", 1, true) then
+            local lines = {}
+            for line in (originalDialog .. "\n"):gmatch("(.-)\n") do
+                lines[#lines + 1] = line
+            end
+
+            local itemId, itemName, itemLineIndex = nil, nil, nil
+            local afterYouWillGet = false
+            for i, line in ipairs(lines) do
+                local clean = line:gsub("`.", ""):lower()
+                if clean:find("you will get:", 1, true) then
+                    afterYouWillGet = true
+                elseif afterYouWillGet and (line:find("add_label_with_icon|", 1, true)
+                    or line:find("add_button_with_icon|", 1, true)) then
+                    local label = line:match("^[^|]*|[^|]*|([^|]*)|")
+                    local icon = line:match("|left|(%d+)|?%s*$") or line:match("|(%d+)|?%s*$")
+                    if icon then
+                        itemId = tonumber(icon)
+                        itemName = label and label:gsub("^%s*%d+%s*x%s*", "") or "Item"
+                        itemLineIndex = i
+                        break
+                    end
+                elseif afterYouWillGet and line:find("end_dialog|", 1, true) then
+                    break
+                end
+            end
+
+            -- Fallback: vending quantity dialogs may show an item row without a heading.
+            if not itemId then
+                for i, line in ipairs(lines) do
+                    if line:find("add_label_with_icon|", 1, true)
+                        or line:find("add_button_with_icon|", 1, true) then
+                        local label = line:match("^[^|]*|[^|]*|([^|]*)|")
+                        local icon = line:match("|left|(%d+)|?%s*$") or line:match("|(%d+)|?%s*$")
+                        if icon and label and label:match("%d+%s*x%s*.+") then
+                            itemId = tonumber(icon)
+                            itemName = label:gsub("^%s*%d+%s*x%s*", "")
+                            itemLineIndex = i
+                            break
+                        end
+                    end
+                end
+            end
+
+            if itemId and itemId > 0 and itemLineIndex then
+                local owned = 0
+                if type(inv) == "function" then
+                    local okCount, amount = pcall(inv, itemId)
+                    if okCount then owned = math.max(0, tonumber(amount) or 0) end
+                end
+                local ownedLine = "add_textbox|`wOwned in Backpack: `2" .. tostring(owned)
+                    .. " `w" .. tostring(itemName or "Item"):gsub("[|\r\n]", " ") .. "|left|"
+
+                local promptIndex
+                for i, line in ipairs(lines) do
+                    if line:gsub("`.", ""):lower():find("how many would you like", 1, true) then
+                        promptIndex = i
+                        break
+                    end
+                end
+                table.insert(lines, promptIndex or (itemLineIndex + 1), ownedLine)
+                local updated = table.concat(lines, "\n")
+
+                -- Apply Kou colors to this modified dialog before displaying it.
+                updated = updated:gsub("set_bg_color|[^\r\n]*", "set_bg_color|10, 10, 10, 180|", 1)
+                updated = updated:gsub("set_border_color|[^\r\n]*", "set_border_color|180, 180, 180, 180|", 1)
+                if not updated:find("set_bg_color|", 1, true) then
+                    updated = "set_bg_color|10, 10, 10, 180|\n" .. updated
+                end
+                if not updated:find("set_border_color|", 1, true) then
+                    updated = "set_border_color|180, 180, 180, 180|\n" .. updated
+                end
+
+                if type(SendVariant) == "function" then
+                    vendingOwnedInjecting = true
+                    local okSend, sendErr = pcall(function()
+                        SendVariant({v1 = "OnDialogRequest", v2 = updated})
+                    end)
+                    vendingOwnedInjecting = false
+                    if okSend then return true end
+                    log("`4[KOU VENDING] Inject error: " .. tostring(sendErr))
+                end
+            else
+                log("`4[KOU VENDING] Item ID tidak ditemukan pada dialog vending.")
+            end
+        end
+    end
+
+
+
     if var.v1 == "OnSpawn" then
         startSpinRestore()
         applySavedVisualWeather()
@@ -3481,15 +3621,11 @@ set_bg_color|10, 10, 10, 180|
 set_border_color|180, 180, 180, 180|
 add_spacer|small|
 add_smalltext|`9Telephone Number List:|
-add_smalltext|`w77777 `9- `wNobody|
-add_smalltext|`w12345 `9- `wCrazy Jim|
-add_smalltext|`w00000 `9- `wOperator|
-add_smalltext|`w41100 - 41199 `9- `wWarehouse / Mystery Voice|
-add_smalltext|`w90210 `9- `wBeverly Hills|
-add_smalltext|`w53785 `9- `wSales-Man|
-add_smalltext|`w02893 `9- `wGrowTech Pharma|
-add_smalltext|`w30912 `9- `wGrowtopizza|
-add_smalltext|`w52368 `9- `wRemove Ghost|
+add_smalltext|`w77777 `9- `wNobody  `w00000 `9- `wOperator|
+add_smalltext|`w41100 - 41199  `9- `wWarehouse / Mystery Voice|
+add_smalltext|`w12345 `9- `wCrazy Jim  `w53785 `9- `wSales-Man|
+add_smalltext|`w90210 `9- `wBeverly Hills  `w02893 `9- `wGrowTech Pharma|
+add_smalltext|`w30912 `9- `wGrowtopizza `w52368 `9- `wRemove Ghost|
 ]]
         local updatedDialog = dialog:gsub(
             "end_dialog|phonecall",
@@ -4100,6 +4236,30 @@ end
             return true
         end
     end
+    -- Apply global dark theme LAST, after Vending/Telephone and other dialog edits.
+    -- This ordering prevents the theme hook from swallowing custom dialog text.
+    if KouDarkDialog.enabled
+        and not kouDarkDialogProcessing
+        and var.v1 == "OnDialogRequest"
+        and type(var.v2) == "string" then
+
+        local originalDialog = var.v2
+        local modifiedDialog = kouApplyDarkDialog(originalDialog)
+
+        if modifiedDialog ~= originalDialog and type(SendVariant) == "function" then
+            kouDarkDialogProcessing = true
+            local ok, err = pcall(function()
+                SendVariant({v1 = "OnDialogRequest", v2 = modifiedDialog})
+            end)
+            kouDarkDialogProcessing = false
+
+            if ok then
+                return true
+            end
+            log("`4[KOU DARK] Error: " .. tostring(err))
+        end
+    end
+
     return false
 end
 function raw(a)
