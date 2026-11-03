@@ -3128,105 +3128,6 @@ end
         ontext("`2Auto Accept Access Mode: " .. (auto_accept_mode and "`2ON" or "`4OFF"))
         return true
     end
-    if cmd("/wr 0") then
-        pull = false
-        kick = false
-        ban = false
-        ontext("`9Wrench Mode : Normal")
-        log("`9Wrench Mode : Normal")
-        return true
-    elseif cmd("/wr 1") then
-        pull = true
-        kick = false
-        ban = false
-        ontext("`9Wrench Mode : `cPull")
-        log("`9Wrench Mode : `cPull")
-        return true
-    elseif cmd("/wr 2") then
-        pull = false
-        kick = true
-        ban = false
-        ontext("`9Wrench Mode : `cKick")
-        log("`9Wrench Mode : `cKick")
-        return true
-    elseif cmd("/wr 3") then
-        pull = false
-        kick = false
-        ban = true
-        ontext("`9Wrench Mode : `4Ban")
-        log("`9Wrench Mode : `4Ban")
-        return true
-    end
-    local netid0 = str:match("^action|wrench\n|netid|(%d+)")
-    if not netid0 then
-        return false
-    end
-    netid0 = tonumber(netid0)
-    if not netid0 then
-        return false
-    end
-    local action
-    local message
-    if pull then
-        action = "pull"
-        message = "`9Pull "
-    elseif kick then
-        action = "kick"
-        message = "`4Kicking "
-    elseif ban then
-        action = "world_ban"
-        message = "`4Banning "
-    else
-        return false
-    end
-    for _, plr in pairs(GetPlayerList()) do
-        if tonumber(plr.netID) == netid0 then
-            SendPacket(
-                2,
-                "action|dialog_return\ndialog_name|popup\nnetID|"
-                    .. netid0
-                    .. "|\nbuttonClicked|"
-                    .. action
-            )
-            ontext(message .. plr.name)
-            return true
-        end
-    end
-    if cmd("/pullall") then
-    local action = "pull"
-    local message = "`9Pulling `wAll Player Target : "..count
-    elseif cmd("/kickall") then
-    local action = "kick"
-    local message = "`4Kicking `wAll Player Target : "..count
-    elseif cmd("/banall") then
-    local action = "world_ban"
-    local message = "`9Banning `wAll Player Target : "..count
-        if not checkworld() then
-            ontext("`4Kamu harus berada di world!")
-            return true
-        end
-        local localPlayer = GetLocal()
-        local localNetID = localPlayer and tonumber(localPlayer.netID)
-        local players = GetPlayerList()
-        local count = 0
-        for _, plr in pairs(players) do
-            local netid = plr and tonumber(plr.netID)
-            if netid and netid ~= localNetID then
-                SendPacket(
-                2,
-                "action|dialog_return\ndialog_name|popup\nnetID|"
-                    .. netid
-                    .. "|\nbuttonClicked|"
-                    .. action
-            )
-                count = count + 1
-                Sleep(100)
-            end
-        end
-        ontext(message)
-        log(message)
-        return true
-    end
   if cmd("/gems") then
   punchgems = not punchgems
   ontext("`2PunchGems: " .. (punchgems and "`2ON" or "`4OFF"))
@@ -3421,6 +3322,7 @@ return false
 end
 local telephoneListInjecting = false
 local vendingOwnedInjecting = false
+local vendingLastCostWL, vendingLastGetAmount, vendingLastItemId, vendingLastItemName, vendingLastStock = nil, nil, nil, nil, nil
 local wrenchButtonInjecting = false
 local kouDarkDialogProcessing = false
 
@@ -3469,11 +3371,14 @@ function var(var)
 
     -- Do not globally discard incoming variants during connection/loading.
     -- World-dependent actions below must check checkworld() at the point of use.
-        if auto_accept_hide_ticks > 0 and var.v1:find("OnDialogRequest") then
-        if var.v2:find("acceptlock") or var.v2:find("acceptaccess") then
-            return true
+        if auto_accept_hide_ticks > 0
+            and var.v1:find("OnDialogRequest", 1, true)
+            and type(var.v2) == "string" then
+            if var.v2:find("acceptlock", 1, true)
+                or var.v2:find("acceptaccess", 1, true) then
+                return true
+            end
         end
-    end
     if checkworld() and auto_accept_mode and var.v1:find("OnConsoleMessage") and var.v2:find("wants to add you to a") then
         local my_netid = tonumber(GetLocal().netid) or tonumber(GetLocal().netID) or 0
         SendPacket(2, "action|wrench\n|netid|" .. my_netid)
@@ -3499,103 +3404,169 @@ function var(var)
 
     -- Vending owned-count injection. Re-send the modified dialog once under a
     -- guard because some Growlauncher builds expose OnVariant payloads read-only.
-    if var.v1 == "OnDialogRequest" and type(var.v2) == "string"
+    if var.v1 == "OnDialogRequest"
+        and type(var.v2) == "string"
         and not vendingOwnedInjecting then
-        local originalDialog = var.v2
-        local lowerDialog = originalDialog:lower()
-        local isVending = lowerDialog:find("you will get:", 1, true)
-            or lowerDialog:find("how many would you like to buy", 1, true)
-            or lowerDialog:find("how many would you like to sell", 1, true)
-
-        if isVending and not lowerDialog:find("owned in backpack:", 1, true) then
-            local lines = {}
-            for line in (originalDialog .. "\n"):gmatch("(.-)\n") do
-                lines[#lines + 1] = line
-            end
-
-            local itemId, itemName, itemLineIndex = nil, nil, nil
-            local afterYouWillGet = false
-            for i, line in ipairs(lines) do
-                local clean = line:gsub("`.", ""):lower()
-                if clean:find("you will get:", 1, true) then
-                    afterYouWillGet = true
-                elseif afterYouWillGet and (line:find("add_label_with_icon|", 1, true)
-                    or line:find("add_button_with_icon|", 1, true)) then
-                    local label = line:match("^[^|]*|[^|]*|([^|]*)|")
-                    local icon = line:match("|left|(%d+)|?%s*$") or line:match("|(%d+)|?%s*$")
-                    if icon then
-                        itemId = tonumber(icon)
-                        itemName = label and label:gsub("^%s*%d+%s*x%s*", "") or "Item"
-                        itemLineIndex = i
-                        break
-                    end
-                elseif afterYouWillGet and line:find("end_dialog|", 1, true) then
-                    break
-                end
-            end
-
-            -- Fallback: vending quantity dialogs may show an item row without a heading.
-            if not itemId then
-                for i, line in ipairs(lines) do
-                    if line:find("add_label_with_icon|", 1, true)
-                        or line:find("add_button_with_icon|", 1, true) then
-                        local label = line:match("^[^|]*|[^|]*|([^|]*)|")
-                        local icon = line:match("|left|(%d+)|?%s*$") or line:match("|(%d+)|?%s*$")
-                        if icon and label and label:match("%d+%s*x%s*.+") then
-                            itemId = tonumber(icon)
-                            itemName = label:gsub("^%s*%d+%s*x%s*", "")
-                            itemLineIndex = i
-                            break
-                        end
-                    end
-                end
-            end
-
-            if itemId and itemId > 0 and itemLineIndex then
-                local owned = 0
-                if type(inv) == "function" then
-                    local okCount, amount = pcall(inv, itemId)
-                    if okCount then owned = math.max(0, tonumber(amount) or 0) end
-                end
-                local ownedLine = "add_textbox|`wOwned in Backpack: `2" .. tostring(owned)
-                    .. " `w" .. tostring(itemName or "Item"):gsub("[|\r\n]", " ") .. "|left|"
-
-                local promptIndex
-                for i, line in ipairs(lines) do
-                    if line:gsub("`.", ""):lower():find("how many would you like", 1, true) then
-                        promptIndex = i
-                        break
-                    end
-                end
-                table.insert(lines, promptIndex or (itemLineIndex + 1), ownedLine)
-                local updated = table.concat(lines, "\n")
-
-                -- Apply Kou colors to this modified dialog before displaying it.
-                updated = updated:gsub("set_bg_color|[^\r\n]*", "set_bg_color|10, 10, 10, 180|", 1)
-                updated = updated:gsub("set_border_color|[^\r\n]*", "set_border_color|180, 180, 180, 180|", 1)
-                if not updated:find("set_bg_color|", 1, true) then
-                    updated = "set_bg_color|10, 10, 10, 180|\n" .. updated
-                end
-                if not updated:find("set_border_color|", 1, true) then
-                    updated = "set_border_color|180, 180, 180, 180|\n" .. updated
-                end
-
-                if type(SendVariant) == "function" then
-                    vendingOwnedInjecting = true
-                    local okSend, sendErr = pcall(function()
-                        SendVariant({v1 = "OnDialogRequest", v2 = updated})
-                    end)
-                    vendingOwnedInjecting = false
-                    if okSend then return true end
-                    log("`4[KOU VENDING] Inject error: " .. tostring(sendErr))
-                end
-            else
-                log("`4[KOU VENDING] Item ID tidak ditemukan pada dialog vending.")
-            end
-        end
+    local originalDialog = var.v2
+    local lowerDialog = originalDialog:lower()
+    -- Avoid duplicate rows if another dialog modifier replays an already edited dialog.
+    local alreadyInjected = lowerDialog:find("owned in backpack:", 1, true) ~= nil
+        or lowerDialog:find("world locks owned:", 1, true) ~= nil
+    local lines = {}
+    for line in (originalDialog .. "\n"):gmatch("(.-)\n") do
+    lines[#lines + 1] = line
     end
-
-
+    local function clean(s)
+    return (tostring(s or ""):gsub("`.", ""))
+    end
+    local function parseRow(line)
+    local fields = {}
+    for field in (line .. "|"):gmatch("(.-)|") do
+    fields[#fields + 1] = field
+    end
+    local label = clean(fields[3] or "")
+    local id = tonumber(line:match("|left|%s*(%d+)%s*|"))
+    or tonumber(fields[5])
+    or tonumber(line:match("|(%d+)|%s*$"))
+    local amountText = label:match("([%d,%.]+)%s*[xX]")
+    or label:match("^%s*([%d,%.]+)%s+")
+    local function toAmount(value)
+    if not value then return nil end
+    value = value:gsub(",", "")
+    return tonumber(value)
+    end
+    local amount = toAmount(amountText)
+    if not amount then
+    local fallback = clean(line):match("([%d,%.]+)%s*[xX]")
+    amount = toAmount(fallback)
+    end
+    return amount, id, label
+    end
+    local section = nil
+    local costWL, getAmount, getItemId, getItemName, machineStock
+    for _, line in ipairs(lines) do
+    local plain = clean(line):lower()
+    if plain:find("you will cost", 1, true)
+    or plain:find("for a cost of", 1, true) then
+    section = "cost"
+    elseif plain:find("you will get", 1, true) then
+    section = "get"
+    elseif plain:find("how many would you like to buy", 1, true)
+    or plain:find("how many would you like to sell", 1, true) then
+    section = "quantity"
+    elseif plain:find("machine contains a total of", 1, true) then
+    machineStock = tonumber(plain:match("total of%s+(%d+)"))
+    elseif (line:find("add_label_with_icon|", 1, true)
+    or line:find("add_button_with_icon|", 1, true)) and section then
+    local amount, id, label = parseRow(line)
+    if section == "cost" and id == 242 and amount then
+    costWL = amount
+    elseif section == "get" and id and id ~= 242 and amount then
+    getAmount, getItemId = amount, id
+    getItemName = label:gsub("^%s*[%d,%.]+%s*[xX]%s*", "")
+    end
+    end
+    end
+    if costWL and getAmount and getItemId then
+    vendingLastCostWL = costWL
+    vendingLastGetAmount = getAmount
+    vendingLastItemId = getItemId
+    vendingLastItemName = getItemName
+    vendingLastStock = machineStock
+    end
+    local isQuantityDialog = lowerDialog:find("how many would you like to buy", 1, true) ~= nil
+    local isOfferDialog = lowerDialog:find("you will cost", 1, true) ~= nil
+    and lowerDialog:find("you will get", 1, true) ~= nil
+    if (isQuantityDialog or isOfferDialog) and not alreadyInjected then
+    local itemId = getItemId or vendingLastItemId
+    local itemName = getItemName or vendingLastItemName or "Item"
+    local priceWL = costWL or vendingLastCostWL
+    local perBuy = getAmount or vendingLastGetAmount
+    local function readInventoryAmount(targetId)
+    targetId = tonumber(targetId)
+    if not targetId then return 0 end
+    if type(GetInventory) == "function" then
+    local ok, inventory = pcall(GetInventory)
+    if ok and type(inventory) == "table" then
+    for _, entry in pairs(inventory) do
+    local entryId = tonumber(entry.id or entry.itemid or entry.item_id or entry.itemID)
+    if entryId == targetId then
+    return math.max(0, tonumber(entry.amount or entry.count or entry.quantity or entry.item_count) or 0)
+    end
+    end
+    end
+    end
+    if type(inv) == "function" then
+    local ok, value = pcall(inv, targetId)
+    if ok then return math.max(0, tonumber(value) or 0) end
+    end
+    return 0
+    end
+    local owned = readInventoryAmount(itemId)
+    local plainDialog = clean(originalDialog):lower():gsub(",", "")
+    local wlOwned = tonumber(plainDialog:match("you%s+have%s+(%d+)%s+world%s+locks?"))
+    if not wlOwned then
+    for balance in plainDialog:gmatch("you%s+have%s+([%d]+)%s+world%s+locks?") do
+    wlOwned = tonumber(balance)
+    break
+    end
+    end
+    if not wlOwned then
+    wlOwned = readInventoryAmount(242)
+    end
+    wlOwned = math.max(0, tonumber(wlOwned) or 0)
+    local totalCanBuy = nil
+    if priceWL and priceWL > 0 and perBuy and perBuy > 0 then
+    local grossItems = (wlOwned / priceWL) * perBuy
+    local afterBackpack = math.max(0, grossItems - owned)
+    totalCanBuy = math.floor(afterBackpack + 1e-9)
+    local stock = machineStock or vendingLastStock
+    if stock and stock >= 0 then
+    totalCanBuy = math.min(totalCanBuy, math.max(0, stock))
+    end
+    end
+    local additions = {}
+    additions[#additions + 1] = "add_textbox|`wWorld Locks Owned: `2" .. wlOwned .. "|left|"
+    if itemId then
+    additions[#additions + 1] = "add_textbox|`wOwned in Backpack: `2" .. owned .. " `w" .. itemName .. "|left|"
+    end
+    if priceWL and perBuy then
+    additions[#additions + 1] = "add_textbox|`wPrice (Items/WL): `2" .. perBuy .. "/" .. priceWL .. " (`w" .. perBuy .. " items per " .. priceWL .. " WL)|left|"
+    end
+    if totalCanBuy ~= nil then
+    additions[#additions + 1] = "add_textbox|`wTotal Items Can Buy: `2" .. totalCanBuy .. "|left|"
+    else
+    additions[#additions + 1] = "add_textbox|`wTotal Items Can Buy: `4Price data not detected|left|"
+    end
+    if isQuantityDialog then
+    local insertAt = #lines
+    for i, line in ipairs(lines) do
+    if clean(line):lower():find("how many would you like to buy", 1, true) then
+    insertAt = i
+    break
+    end
+    end
+    for i = #additions, 1, -1 do table.insert(lines, insertAt, additions[i]) end
+    elseif isOfferDialog then
+    local insertAt = #lines + 1
+    for i, line in ipairs(lines) do
+    if line:find("end_dialog|", 1, true) then insertAt = i; break end
+    end
+    for i = #additions, 1, -1 do table.insert(lines, insertAt, additions[i]) end
+    end
+    local updated = table.concat(lines, "\n")
+    updated = kouApplyDarkDialog(updated)
+    if updated ~= originalDialog and type(SendVariant) == "function" then
+    vendingOwnedInjecting = true
+    local okSend, sendErr = pcall(function()
+    SendVariant({v1 = "OnDialogRequest", v2 = updated})
+    end)
+    vendingOwnedInjecting = false
+    if okSend then return true end
+    log("`4[KOU VENDING] Inject error: " .. tostring(sendErr))
+    end
+    end
+    end
 
     if var.v1 == "OnSpawn" then
         startSpinRestore()
@@ -3634,9 +3605,14 @@ add_smalltext|`w30912 `9- `wGrowtopizza `w52368 `9- `wRemove Ghost|
         )
         if updatedDialog ~= dialog and type(SendVariant) == "function" then
             telephoneListInjecting = true
-            SendVariant({v1 = "OnDialogRequest", v2 = updatedDialog})
+            local okSend, sendErr = pcall(function()
+                SendVariant({v1 = "OnDialogRequest", v2 = updatedDialog})
+            end)
             telephoneListInjecting = false
-            return true
+            if okSend then
+                return true
+            end
+            log("`4[Telephone] Inject error: " .. tostring(sendErr))
         end
     end
 end
