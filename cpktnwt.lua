@@ -94,47 +94,42 @@ local function processChatPrefixReturn(packet)
     return true
 end
 local function checkworld()
-    -- Fail closed: login screen, connecting, disconnected, and EXIT are not worlds.
+    -- World check without relying on optional width/height/tile fields.
+    -- Some Growlauncher builds do not expose those fields, which previously
+    -- caused every slash command to be rejected as an unknown command.
     local worldName = nil
-    local worldApiFound = false
 
-    local nameGetter = GetWorldName
-    if type(nameGetter) == "function" then
-        worldApiFound = true
-        local ok, result = pcall(nameGetter)
-        if ok and type(result) == "string" then
-            worldName = result
+    local worldGetter = getWorld or getworld
+    if type(worldGetter) == "function" then
+        local ok, world = pcall(worldGetter)
+        if ok and type(world) == "table" then
+            worldName = world.name or world.worldName
         end
     end
 
-    if not worldName then
-        local worldGetter = getWorld or getworld
-        if type(worldGetter) == "function" then
-            worldApiFound = true
-            local ok, result = pcall(worldGetter)
-            if ok and type(result) == "table" and type(result.name) == "string" then
-                worldName = result.name
-            end
-        end
+    if type(worldName) ~= "string" and type(GetWorldName) == "function" then
+        local ok, name = pcall(GetWorldName)
+        if ok and type(name) == "string" then worldName = name end
     end
 
-    if not worldApiFound or type(worldName) ~= "string" then return false end
+    if type(worldName) ~= "string" then return false end
     worldName = worldName:match("^%s*(.-)%s*$") or ""
     local upperName = worldName:upper()
-    if worldName == "" or upperName == "EXIT" or upperName == "LOADING" then
+    if worldName == "" or upperName == "EXIT" or upperName == "LOADING"
+        or upperName == "CONNECTING" then
         return false
     end
 
     local localGetter = GetLocal or getLocal
     if type(localGetter) ~= "function" then return false end
-    local ok, player = pcall(localGetter)
-    if not ok or type(player) ~= "table" then return false end
+    local okPlayer, player = pcall(localGetter)
+    if not okPlayer or type(player) ~= "table" then return false end
 
-    -- A local player without a valid network id is usually still connecting.
     local netid = tonumber(player.netid or player.netID)
     if not netid or netid <= 0 then return false end
     return true
 end
+
 local function GetObjectListSafe()
     if not checkworld() then return nil end
     local getter = getObjectList or GetObjectList
@@ -876,10 +871,13 @@ SendVariant(var)
 return true
 end
 function wear(id)
-    local pkt = {}
-    pkt.type = 10
-    pkt.value = id
-    SendPacketRaw(false, pkt)
+    id = tonumber(id)
+    if not id or id <= 0 or not checkworld() then return false end
+    -- Never send an equip packet for an item that is not in the backpack.
+    if type(inv) == "function" and (tonumber(inv(id)) or 0) <= 0 then return false end
+    local pkt = {type = 10, value = id}
+    local ok = pcall(SendPacketRaw, false, pkt)
+    return ok
 end
 function dialog(tkss)
 va = {}
@@ -916,19 +914,20 @@ function notify(str)
     end
 end
 function greenbox(x, y)
-    SendPacketRaw(true, {
-        type = 38,
-        netid = tonumber(string.format("%02d%02d", y, x))
-    })
+    if not checkworld() then return false end
+    x, y = tonumber(x), tonumber(y)
+    if not x or not y or x < 0 or y < 0 then return false end
+    local netid = tonumber(string.format("%02d%02d", y, x))
+    if not netid then return false end
+    return pcall(SendPacketRaw, true, {type = 38, netid = netid})
 end
 function path(x, y, is_left)
-    local f_state = 32
-    local x_off = 8
-    if is_left then
-        f_state = 16
-        x_off = -8
-    end
-    SendPacketRaw(false, {type = 0, x = x*32 + x_off, y = y*32, state = f_state})
+    if not checkworld() then return false end
+    x, y = tonumber(x), tonumber(y)
+    if not x or not y or x < 0 or y < 0 then return false end
+    local f_state, x_off = 32, 8
+    if is_left then f_state, x_off = 16, -8 end
+    return pcall(SendPacketRaw, false, {type = 0, x = x * 32 + x_off, y = y * 32, state = f_state})
 end
 function inv(id)
     for _, item in pairs(GetInventory()) do
@@ -1445,8 +1444,8 @@ dialog(setupbtk)
 return true
 end
 function take()
-    local total_pos1, total_pos2 = 0, 0
-    local total_pos3, total_pos4 = 0, 0
+    if not checkworld() then return false end
+    local total_pos1, total_pos2, total_pos3, total_pos4 = 0, 0, 0, 0
     local player_positions = {
         {x = player1x, y = player1y},
         {x = player2x, y = player2y},
@@ -1463,112 +1462,101 @@ function take()
         ontext("`4At least 2 player positions must be configured!")
         return true
     end
-    local totals = {
-        [1] = 0,
-        [2] = 0,
-        [3] = 0,
-        [4] = 0
-    }
-    local objects = GetObjectList()
-    if objects then
-        for _, obj in pairs(objects) do
-            local bx = math.floor(obj.posX / 32)
-            local by = math.floor(obj.posY / 32)
-            local amt = obj.amount or obj.count or 1
-            local lock_val = 0
-            if obj.itemid == 242 then
-                lock_val = amt
-            elseif obj.itemid == 1796 then
-                lock_val = amt * 100
-            elseif obj.itemid == 7188 then
-                lock_val = amt * 10000
-            end
-            if lock_val > 0 then
-                for _, i in ipairs(active_players) do
-                    local pos = player_positions[i]
-                    local dist = math.max(
-                        math.abs(bx - pos.x),
-                        math.abs(by - pos.y)
-                    )
-                    if dist <= 1 then
-                        totals[i] = totals[i] + lock_val
-                        break
+
+    local objects = GetObjectListSafe()
+    if type(objects) ~= "table" or next(objects) == nil then
+        ontext("`4No objects found. Nothing to collect.")
+        return true
+    end
+
+    local totals = {[1] = 0, [2] = 0, [3] = 0, [4] = 0}
+    local validTargets = {}
+    for _, obj in pairs(objects) do
+        if type(obj) == "table" then
+            local ox = tonumber(obj.posX or (obj.pos and obj.pos.x))
+            local oy = tonumber(obj.posY or (obj.pos and obj.pos.y))
+            local objectId = tonumber(obj.id)
+            local itemId = tonumber(obj.itemid or obj.itemID)
+            local amount = tonumber(obj.amount or obj.count) or 1
+            if ox and oy and objectId and itemId then
+                local lockValue = 0
+                if itemId == 242 then lockValue = amount
+                elseif itemId == 1796 then lockValue = amount * 100
+                elseif itemId == 7188 then lockValue = amount * 10000 end
+                if lockValue > 0 then
+                    local bx, by = math.floor(ox / 32), math.floor(oy / 32)
+                    validTargets[#validTargets + 1] = {
+                        id = objectId, x = ox, y = oy, bx = bx, by = by,
+                        amount = amount, lockValue = lockValue
+                    }
+                    for _, playerIndex in ipairs(active_players) do
+                        local pos = player_positions[playerIndex]
+                        local distance = math.max(math.abs(bx - pos.x), math.abs(by - pos.y))
+                        if distance <= 1 then
+                            totals[playerIndex] = totals[playerIndex] + lockValue
+                            break
+                        end
                     end
                 end
             end
         end
     end
-    total_pos1 = totals[1]
-    total_pos2 = totals[2]
-    total_pos3 = totals[3]
-    total_pos4 = totals[4]
-    local any_locks = false
-    for _, i in ipairs(active_players) do
-        if totals[i] > 0 then
-            any_locks = true
-            break
-        end
+
+    total_pos1, total_pos2 = totals[1], totals[2]
+    total_pos3, total_pos4 = totals[3], totals[4]
+    local anyLocks = false
+    for _, playerIndex in ipairs(active_players) do
+        if totals[playerIndex] > 0 then anyLocks = true; break end
     end
-    if not any_locks then
+    if not anyLocks then
         ontext("`4No locks found on configured positions!")
         return true
     end
-    local reference_total = totals[active_players[1]]
-    for _, i in ipairs(active_players) do
-        if totals[i] ~= reference_total then
-            ontext(
-                "`4Bet Mismatched!\n" ..
+
+    local referenceTotal = totals[active_players[1]]
+    for _, playerIndex in ipairs(active_players) do
+        if totals[playerIndex] ~= referenceTotal then
+            ontext("`4Bet Mismatched!\n" ..
                 "`w[ Player1 ] : `9" .. total_pos1 ..
                 "\n`w[ Player2 ] : `9" .. total_pos2 ..
                 "\n`w[ Player3 ] : `9" .. total_pos3 ..
-                "\n`w[ Player4 ] : `9" .. total_pos4
-            )
+                "\n`w[ Player4 ] : `9" .. total_pos4)
             return true
         end
     end
+
+    -- Re-read the live object list immediately before sending collect packets.
+    if not checkworld() then return false end
+    local liveObjects = GetObjectListSafe()
+    if type(liveObjects) ~= "table" or next(liveObjects) == nil then return true end
+    local liveIds = {}
+    for _, obj in pairs(liveObjects) do
+        if type(obj) == "table" and tonumber(obj.id) then
+            liveIds[tonumber(obj.id)] = true
+        end
+    end
+
     local total_picked = 0
-    if objects then
-        for _, obj in pairs(objects) do
-            local bx = math.floor(obj.posX / 32)
-            local by = math.floor(obj.posY / 32)
-            local amt = obj.amount or obj.count or 1
-            local lock_val = 0
-            if obj.itemid == 242 then
-                lock_val = amt
-            elseif obj.itemid == 1796 then
-                lock_val = amt * 100
-            elseif obj.itemid == 7188 then
-                lock_val = amt * 10000
-            end
-            if lock_val > 0 then
-                for _, i in ipairs(active_players) do
-                    local pos = player_positions[i]
-                    local dist = math.max(
-                        math.abs(bx - pos.x),
-                        math.abs(by - pos.y)
-                    )
-                    if dist <= 1 then
-                        total_picked = total_picked + lock_val
-                        wear(242)
-                        SendPacketRaw(false, {
-                            px = bx,
-                            py = by,
-                            type = 11,
-                            value = obj.id,
-                            x = obj.posX,
-                            y = obj.posY
-                        })
-                        break
-                    end
+    for _, target in ipairs(validTargets) do
+        if liveIds[target.id] and checkworld() then
+            for _, playerIndex in ipairs(active_players) do
+                local pos = player_positions[playerIndex]
+                local distance = math.max(math.abs(target.bx - pos.x), math.abs(target.by - pos.y))
+                if distance <= 1 then
+                    local ok = pcall(SendPacketRaw, false, {
+                        px = target.bx, py = target.by, type = 11,
+                        value = target.id, x = target.x, y = target.y
+                    })
+                    if ok then total_picked = total_picked + target.lockValue end
+                    break
                 end
             end
         end
     end
+
     if total_picked > 0 then
         Aount = math.floor(total_picked / 2)
-        local tax_deduction = math.floor(
-            taxset / 100 * total_picked
-        )
+        local tax_deduction = math.floor(taxset / 100 * total_picked)
         saved_tax = tax_deduction
         local payout_after_tax = total_picked - tax_deduction
         local result =
@@ -1607,8 +1595,9 @@ kou_floating_objects = {}
 kou_floating_search = ""
 function kouFloatingScan()
     kou_floating_objects = {}
-    local objects = getObjectList()
-    if not objects then return end
+    if not checkworld() then return false end
+    local objects = GetObjectListSafe()
+    if type(objects) ~= "table" or next(objects) == nil then return false end
     for _, obj in pairs(objects) do
         if obj then
             local itemid = tonumber(obj.itemid) or 0
@@ -1688,11 +1677,29 @@ function kouFloatingDialog()
     dialog(table.concat(lines, "\n"))
 end
 function kouFloatingTeleport(index)
+    if not checkworld() then return false end
     index = tonumber(index)
-    if not index then return end
-    local obj = kou_floating_objects[index]
-    if not obj then return end
-    FindPath(obj.x, obj.y)
+    if not index then return false end
+    local cached = kou_floating_objects[index]
+    if type(cached) ~= "table" then return false end
+    local targetId = tonumber(cached.id)
+    local targetX, targetY = tonumber(cached.x), tonumber(cached.y)
+    if not targetId or not targetX or not targetY then return false end
+    -- Re-check that the cached object still exists; stale targets after relog
+    -- must never trigger a movement/action packet.
+    local objects = GetObjectListSafe()
+    if type(objects) ~= "table" then return false end
+    local found = false
+    for _, obj in pairs(objects) do
+        if type(obj) == "table" and tonumber(obj.id) == targetId then
+            found = true
+            break
+        end
+    end
+    if not found then return false end
+    local finder = FindPath or findPath
+    if type(finder) ~= "function" then return false end
+    return pcall(finder, targetX, targetY)
 end
 local function getTotalGemsAtTile(x_tile, y_tile)
     local total_amount = 0
@@ -1763,13 +1770,17 @@ local function triggerParticleAt(tx, ty, delay)
     end)
 end
 function showchatgems()
+    if not checkworld() then return false end
     runThread(function()
-    Sleep(1000)
-SendPacket(2,"action|input\n|text|Collected `#+"..cg.." `7Gems")
-log("`9Gems `7Lu `#"..cg.."`7 y")
-cg = 0
-return false
+        Sleep(1000)
+        if not checkworld() then return end
+        local amount = tonumber(cg) or 0
+        if amount <= 0 then return end
+        SendPacket(2, "action|input\n|text|Collected `#+" .. amount .. " `7Gems")
+        log("`9Gems `7Lu `#" .. amount .. "`7 y")
+        cg = 0
     end)
+    return true
 end
 local function triggerParticleAt1(tx, ty, delay)
     if not checkworld() then return end
@@ -2491,15 +2502,12 @@ dialog(mmenu)
         return processChatPrefixReturn(str)
     end
 
-    -- Do not run gameplay commands or chat rewriting from login/loading/disconnected screens.
-    -- The /chat menu and its config dialog above remain usable outside a world.
-    if not checkworld() then
-        return false
-    end
+    -- Do not globally block slash-command parsing outside a world.
+    -- Each gameplay action must validate its own world/target before sending packets.
 
     -- Apply Auto /me and prefix in one rewrite so both features work together.
     -- Example: /me [KOU] message [KOU]
-    if packetType == 2 and not chatPrefixSending and chatInput and input ~= ""
+    if checkworld() and packetType == 2 and not chatPrefixSending and chatInput and input ~= ""
         and input:sub(1, 1) ~= "/"
         and (chatAutoMeEnabled or (chatPrefixEnabled and chatPrefixText ~= ""
             and (chatPrefixLeft or chatPrefixRight))) then
@@ -2728,6 +2736,10 @@ end
         return true
     end
 if cmd("/relog") then
+    if not checkworld() then
+        ontext("`4Wait until you are fully inside a world.")
+        return true
+    end
     local wname = GetWorldName()
     if wname and wname ~= "" and wname ~= "EXIT" then
         relogWorld = wname
@@ -2742,6 +2754,10 @@ if relogPending and str:find("action|quit_to_exit", 1, true) then
         return false
     end
 if cmd("/rejoin") then
+if not checkworld() then
+    ontext("`4Wait until you are fully inside a world.")
+    return true
+end
 SendPacket(3,"action|join_request\nname|"..GetWorldName())
 log("`2Rejoin world successfully.")
 return true
